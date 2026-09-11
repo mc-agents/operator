@@ -193,6 +193,11 @@ so there is no registry secret to rotate.
   reports ready while lying about its link would be believed.
 - `Lost` is a heuristic: a running container that restarted and is not ready again. There is no
   history to distinguish it from a bot that was never linked.
+- `ghcr.io/mc-agents/mc-assets` does not exist yet, and neither do the bot images. The operator
+  builds the reference and reports the pull failure honestly; nothing here can be exercised
+  against a running bot until `bot-mineflayer` publishes. The asset fetcher's contract is
+  `--version <mc> --dest <dir>` plus `MC_VERSION` and `MC_ASSETS_DIR`, and it belongs to whoever
+  builds that image.
 - Bot pods are bare pods, not a Deployment or StatefulSet. A drained node deletes the pod and the
   operator makes a new one; the bot's in-game session does not survive that, and nothing here
   pretends otherwise.
