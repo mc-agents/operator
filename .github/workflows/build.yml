@@ -77,6 +77,8 @@ jobs:
           sha=$(git rev-parse --short=8 HEAD)
           case "$version" in *-*) sep=. ;; *) sep=- ;; esac
           echo "value=${version}${sep}${stamp}.g${sha}" >> "$GITHUB_OUTPUT"
+          # A chart's appVersion falls back to this one, so it has to exist in the registry.
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -100,6 +102,7 @@ jobs:
             VERSION=${{ steps.tag.outputs.value }}
           tags: |
             ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.version }}
             ${{ env.IMAGE }}:latest
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true

@@ -23,6 +23,6 @@ Scale a pool instead of creating bots one by one:
 
   kubectl scale minecraftbotpool/scouts -n {{ .Release.Namespace }} --replicas=8
 
-The operator is not on the data path. Bots dial {{ .Values.bots.registry }}-built images at the
-MCP server address in their own spec; LINK in `kubectl get minecraftbots` is the pod's readiness,
-which the bot turns green once its hello has been accepted.
+The operator is not on the data path. A bot pod runs an image from {{ .Values.bots.registry }} and
+dials the MCP server named in its own spec; LINK in `kubectl get minecraftbots` is that pod's
+readiness probe, which a bot turns green only once its hello has been accepted.
