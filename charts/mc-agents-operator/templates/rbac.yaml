@@ -1,0 +1,54 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "mc-agents-operator.serviceAccountName" . }}
+  labels:
+    {{- include "mc-agents-operator.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- if .Values.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "mc-agents-operator.fullname" . }}
+  labels:
+    {{- include "mc-agents-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["mc-agents.dev"]
+    resources: ["minecraftbots", "minecraftbotpools"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["mc-agents.dev"]
+    resources: ["minecraftbots/status", "minecraftbotpools/status"]
+    verbs: ["get", "update", "patch"]
+  # Bot pods are created bare rather than through a Deployment: one bot is one pod, and a
+  # restart has to keep the same identity.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "mc-agents-operator.fullname" . }}
+  labels:
+    {{- include "mc-agents-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "mc-agents-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "mc-agents-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

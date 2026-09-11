@@ -1,0 +1,10 @@
+apiVersion: mc-agents.dev/v1alpha1
+kind: MinecraftBot
+metadata:
+  name: scout
+spec:
+  kind: mineflayer
+  minecraftVersion: "26.1.2"
+  server:
+    host: mc-mcp-server.mc-agents.svc
+    port: 8765

@@ -1,0 +1,101 @@
+{{- include "mc-agents-operator.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mc-agents-operator.fullname" . }}
+  labels:
+    {{- include "mc-agents-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "mc-agents-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mc-agents-operator.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "mc-agents-operator.serviceAccountName" . }}
+      # A Service named "metrics" in this namespace would otherwise inject METRICS_PORT and
+      # friends into the operator's environment.
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: operator
+          image: {{ include "mc-agents-operator.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --namespace={{ .Values.watchNamespace }}
+            - --workers={{ .Values.workers }}
+            - --resync-period={{ .Values.resyncPeriod }}
+            - --health-probe-bind-address=:{{ .Values.probes.port }}
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address=:{{ .Values.metrics.port }}
+            {{- else }}
+            - --metrics-bind-address=
+            {{- end }}
+            - --leader-elect={{ .Values.leaderElection.enabled }}
+            - --leader-elect-id={{ .Values.leaderElection.id }}
+            - --leader-elect-namespace={{ .Values.leaderElection.namespace }}
+            - --leader-elect-lease-duration={{ .Values.leaderElection.leaseDuration }}
+            - --bot-registry={{ .Values.bots.registry }}
+            - --mineflayer-tag={{ .Values.bots.mineflayerTag }}
+            - --fabric-tag={{ .Values.bots.fabricTag }}
+            - --asset-fetcher-image={{ .Values.bots.assetFetcherImage }}
+            - --spawn-interval={{ .Values.bots.spawnInterval }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: probes
+              containerPort: {{ .Values.probes.port }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
+          {{- with .Values.probes.readiness }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.probes.liveness }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

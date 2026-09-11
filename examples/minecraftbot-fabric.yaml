@@ -1,0 +1,29 @@
+apiVersion: mc-agents.dev/v1alpha1
+kind: MinecraftBot
+metadata:
+  name: looker
+spec:
+  kind: fabric
+  minecraftVersion: "26.1.2"
+  server:
+    host: mc-mcp-server.mc-agents.svc
+    port: 8765
+  render:
+    enabled: true
+    width: 854
+    height: 480
+    # Ticks and frames are separate, so one frame a second still leaves networking, physics and
+    # inventory running at full speed. Raise it only when a screenshot needs motion.
+    frameRateLimit: 1
+  assets:
+    # Unset claimName falls back to an emptyDir, which means every pod re-downloads 200-600MB
+    # from the Mojang manifest. Fill a PVC once with a Job and set prefilled to mount it instead.
+    claimName: mc-assets-26-1-2
+    prefilled: true
+    readOnly: true
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1536Mi
+    limits:
+      memory: 2Gi

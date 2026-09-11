@@ -1,0 +1,127 @@
+# The operator holds no bot state: bots dial the MCP server themselves, so nothing here sits on
+# the data path. A second replica is still only useful with leader election on, because two
+# reconcilers racing on the same MinecraftBot would create and delete the same pod.
+replicaCount: 1
+
+image:
+  registry: ghcr.io/mc-agents
+  repository: operator
+  # Empty falls back to Chart.appVersion. A promotion swaps only this value.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# ghcr.io is public for these images, so nothing is needed by default.
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  # The operator reads MinecraftBots and writes pods. Turn this off only when the rules are
+  # managed elsewhere; the operator cannot work without them.
+  create: true
+
+# Empty watches every namespace. Setting it narrows the informers, not the RBAC: the ClusterRole
+# stays cluster-wide so the same release can be widened later without a permission change.
+watchNamespace: ""
+
+# Concurrent reconciles per controller. Bots are independent of each other, so this is a
+# throughput knob, not a correctness one.
+workers: 2
+
+# Informer resync. Pod events already drive reconciles; this only catches a missed watch event.
+resyncPeriod: 10m
+
+leaderElection:
+  # Required when replicaCount > 1; the chart refuses to render otherwise.
+  enabled: false
+  id: mc-agents-operator.mc-agents.dev
+  # Empty uses the release namespace.
+  namespace: ""
+  leaseDuration: 15s
+
+bots:
+  # Where the bot images live. The operator builds
+  #   <registry>/bot-mineflayer:<mineflayerTag>
+  #   <registry>/bot-fabric:<fabricTag>-mc<spec.minecraftVersion>
+  # so a fabric image is always pinned to one Minecraft version, and a mineflayer image is not.
+  registry: ghcr.io/mc-agents
+  mineflayerTag: latest
+  fabricTag: latest
+
+  # fabric bots cannot ship the Minecraft client jar inside the image: redistribution is not
+  # ours to grant. An initContainer pulls it from the Mojang version manifest into a cache
+  # volume instead. Point spec.assets.claimName at a PVC that a Job already filled to turn that
+  # 200-600MB download into a mount.
+  assetFetcherImage: ghcr.io/mc-agents/mc-assets:latest
+
+  # Paper refuses a second login from the same address within four seconds. Bot pods each get
+  # their own IP so this rarely bites, but a pool scaling from 0 to 8 creates eight pods in one
+  # reconcile sweep, and spacing them costs nothing. 0 disables the gate.
+  spawnInterval: 4s
+
+metrics:
+  # Served without auth on the pod IP; nothing bot-identifying is exported.
+  enabled: true
+  port: 8080
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # Labels the Prometheus instance selects on, e.g. release: kube-prometheus-stack
+    labels: {}
+
+# /readyz turns green only once the informer caches have synced, so a rollout does not report
+# healthy while it is still blind to existing bots.
+probes:
+  port: 8081
+  readiness:
+    httpGet:
+      path: /readyz
+      port: probes
+    periodSeconds: 10
+  liveness:
+    httpGet:
+      path: /healthz
+      port: probes
+    periodSeconds: 30
+    timeoutSeconds: 5
+
+# The operator is a watch loop with two small caches. Memory scales with the number of bots and
+# pods it tracks, not with what the bots are doing.
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+
+# Extra environment variables. A matching name overrides what the chart set.
+extraEnv: []
+
+# CLI flags the chart does not model, passed straight through, e.g. ["-v", "4"]
+extraArgs: []
