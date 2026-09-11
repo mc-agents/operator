@@ -104,6 +104,9 @@ k3d-deploy: k3d-guard image ## Build, import and install the operator into the k
 		--set image.tag=dev \
 		--set image.pullPolicy=Never \
 		--wait
+	# The dev tag never changes, so the pod spec is identical and helm would leave the old
+	# image running. Restart explicitly or the next verify run tests the previous build.
+	kubectl --context $(K3D_CONTEXT) -n $(NAMESPACE) rollout restart deploy/mc-agents-operator
 	kubectl --context $(K3D_CONTEXT) -n $(NAMESPACE) rollout status deploy/mc-agents-operator
 
 .PHONY: k3d-verify

@@ -52,6 +52,11 @@ await "the pool has five bots" 60 count_is scouts 5
 k scale minecraftbotpool/scouts --replicas=1
 await "the pool has one bot" 60 count_is scouts 1
 await "the survivor is the lowest ordinal" 30 k get minecraftbot scouts-0
+k scale minecraftbotpool/scouts --replicas=0
+await "the pool empties" 60 count_is scouts 0
+# An omitempty on the counter would drop it here, blanking the printer column and taking
+# .status.replicas away from the scale subresource.
+await "status.replicas is still reported at zero" 30 equals minecraftbotpool scouts .status.replicas 0
 
 echo "== deleting the CR collects the pod"
 k delete minecraftbot scout --wait=true

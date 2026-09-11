@@ -32,13 +32,13 @@ type MinecraftBotPoolSpec struct {
 
 type MinecraftBotPoolStatus struct {
 	// +optional
-	Replicas int32 `json:"replicas,omitempty"`
+	Replicas int32 `json:"replicas"`
 
 	// +optional
-	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+	ReadyReplicas int32 `json:"readyReplicas"`
 
 	// +optional
-	LinkedReplicas int32 `json:"linkedReplicas,omitempty"`
+	LinkedReplicas int32 `json:"linkedReplicas"`
 
 	// +optional
 	Selector string `json:"selector,omitempty"`
