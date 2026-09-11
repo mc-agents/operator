@@ -35,9 +35,3 @@ func (g *intervalGate) Acquire(now time.Time) (bool, time.Duration) {
 	g.last = now
 	return true, 0
 }
-
-type openGate struct{}
-
-func NewOpenGate() Gate { return openGate{} }
-
-func (openGate) Acquire(time.Time) (bool, time.Duration) { return true, 0 }
