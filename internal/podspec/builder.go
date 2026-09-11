@@ -168,11 +168,13 @@ func (b *DefaultBuilder) assetFetcher(bot *v1alpha1.MinecraftBot, assets *v1alph
 
 func containerEnv(bot *v1alpha1.MinecraftBot) []corev1.EnvVar {
 	env := []corev1.EnvVar{
-		{Name: "MCP_HOST", Value: bot.Spec.Server.Host},
-		{Name: "MCP_PORT", Value: strconv.Itoa(int(port(bot)))},
+		// The names are docs/bot-protocol.md's, not this file's. Three repositories had three
+		// sets of them, so a pod the operator built dialled its own loopback and never linked.
+		{Name: "MCP_SERVER_HOST", Value: bot.Spec.Server.Host},
+		{Name: "MCP_SERVER_PORT", Value: strconv.Itoa(int(port(bot)))},
 		{Name: "BOT_NAME", Value: BotName(bot)},
 		{Name: "BOT_KIND", Value: string(bot.Spec.Kind)},
-		{Name: "BOT_HEALTH_PORT", Value: strconv.Itoa(HealthPort)},
+		{Name: "HEALTH_PORT", Value: strconv.Itoa(HealthPort)},
 		{Name: "BOT_WORK_DIR", Value: WorkDir},
 		{Name: "MC_VERSION", Value: bot.Spec.MinecraftVersion},
 		{Name: "POD_NAME", ValueFrom: fieldRef("metadata.name")},

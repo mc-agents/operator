@@ -95,8 +95,8 @@ func TestPodCarriesTheLinkContract(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	for key, want := range map[string]string{
-		"MCP_HOST": "mcp.qa.svc",
-		"MCP_PORT": "8765",
+		"MCP_SERVER_HOST": "mcp.qa.svc",
+		"MCP_SERVER_PORT": "8765",
 		"BOT_NAME": "scout",
 		"BOT_KIND": "mineflayer",
 	} {
@@ -105,7 +105,7 @@ func TestPodCarriesTheLinkContract(t *testing.T) {
 		}
 	}
 	if pod.Spec.EnableServiceLinks == nil || *pod.Spec.EnableServiceLinks {
-		t.Error("service link env vars would shadow MCP_PORT, so they must be off")
+		t.Error("service link env vars would shadow MCP_SERVER_PORT, so they must be off")
 	}
 	if pod.Spec.RestartPolicy != corev1.RestartPolicyAlways {
 		t.Errorf("restart policy is %q; a crashed bot has to come back without the operator", pod.Spec.RestartPolicy)

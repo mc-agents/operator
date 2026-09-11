@@ -103,14 +103,15 @@ held back sits in `Pending` and is requeued for exactly the remaining wait.
 
 ### What the bot pod is handed
 
-The operator and the bot images agree on this environment. Adding to it is an API change.
+The names are [`docs/bot-protocol.md`](https://github.com/mc-agents/mcp-server/blob/main/docs/bot-protocol.md)'s,
+under *How a bot is told where to dial*. Adding to them is a change to that document first.
 
 | variable | meaning |
 | --- | --- |
-| `MCP_HOST`, `MCP_PORT` | where to dial |
+| `MCP_SERVER_HOST`, `MCP_SERVER_PORT` | where to dial |
 | `BOT_NAME` | the name the bot reports in `hello`; `spec.botName`, else the CR name truncated to 16 |
 | `BOT_KIND`, `MC_VERSION` | what the bot should claim to be |
-| `BOT_HEALTH_PORT` | port to serve `/healthz` and `/readyz` on (8080) |
+| `HEALTH_PORT` | port to serve `/healthz` and `/readyz` on (8080) |
 | `BOT_WORK_DIR` | writable scratch (`/work`); the root filesystem is read-only |
 | `MC_ASSETS_DIR` | fabric only, `<mountPath>/<minecraftVersion>` |
 | `BOT_RENDER`, `BOT_RENDER_WIDTH`, `BOT_RENDER_HEIGHT`, `BOT_FRAME_RATE_LIMIT` | fabric only |
@@ -119,8 +120,8 @@ The operator and the bot images agree on this environment. Adding to it is an AP
 `/readyz` must not go green until the bot is linked. That is the only signal the operator has about
 the link, and `LINK` in `kubectl get` is exactly it.
 
-`enableServiceLinks: false` on every bot pod: a Service named `mcp` in the same namespace would
-otherwise inject `MCP_PORT` and silently override the spec.
+`enableServiceLinks: false` on every bot pod: a Service named `mcp-server` in the same namespace
+would otherwise inject `MCP_SERVER_PORT` and silently override the spec.
 
 ## Layout
 
