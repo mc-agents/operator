@@ -120,7 +120,7 @@ affinity: {}
 podAnnotations: {}
 podLabels: {}
 
-# Extra environment variables. A matching name overrides what the chart set.
+# Extra environment variables. The operator is configured by flags, so nothing here collides.
 extraEnv: []
 
 # CLI flags the chart does not model, passed straight through, e.g. ["-v", "4"]

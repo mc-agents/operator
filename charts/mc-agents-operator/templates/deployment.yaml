@@ -46,7 +46,7 @@ spec:
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             {{- else }}
-            - --metrics-bind-address=
+            - --metrics-bind-address=0
             {{- end }}
             - --leader-elect={{ .Values.leaderElection.enabled }}
             - --leader-elect-id={{ .Values.leaderElection.id }}
@@ -60,14 +60,10 @@ spec:
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with .Values.extraEnv }}
           env:
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
-            {{- end }}
+          {{- end }}
           ports:
             - name: probes
               containerPort: {{ .Values.probes.port }}
