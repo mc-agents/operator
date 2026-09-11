@@ -31,6 +31,19 @@ if ! previous="$(git -C "${ROOT}" show "${base}:VERSION" 2>/dev/null | tr -d '[:
 	exit 0
 fi
 
+# Only what ships has to arrive under a version of its own. Demanding one for a README edit
+# spends a version number on a change nobody can pull, and the other three repositories here
+# have always drawn the line this way.
+RELEASE_PATHS='^(api/|cmd/|internal/|charts/|go\.mod|go\.sum|Dockerfile|VERSION)'
+if ! changed="$(git -C "${ROOT}" diff --name-only "${base}" HEAD)"; then
+	fail "cannot diff against ${base}. Check out with fetch-depth: 0 so there is history to compare."
+fi
+
+if ! printf '%s\n' "${changed}" | grep -Eq "${RELEASE_PATHS}"; then
+	echo "version ${version} is consistent; nothing that ships changed"
+	exit 0
+fi
+
 [[ "${previous}" != "${version}" ]] || fail "VERSION is still ${version}; raise it"
 highest="$(printf '%s\n%s\n' "${previous}" "${version}" | sort -V | tail -1)"
 [[ "${highest}" == "${version}" ]] || fail "VERSION went down: ${previous} -> ${version}"
