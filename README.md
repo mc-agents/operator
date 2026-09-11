@@ -170,7 +170,8 @@ make k3d-down         # throw it away
 `make verify` creates the cluster `mc-agents`, builds and imports the operator image, installs the
 chart, then applies the examples and asserts: a bot becomes a pod, a missing bot image surfaces in
 `status.lastError` as `ImagePullBackOff`, the pool creates three ordinal bots, `kubectl scale` moves
-that to five and back to one, the survivor is `scouts-0`, and deleting a bot CR collects its pod.
+that to five, back to one and then to zero, the survivor is `scouts-0`, `status.replicas` is still
+reported at zero, and deleting a bot CR collects its pod.
 
 **The cluster is named `mc-agents` and nothing else.** `hyperfarm-local` is shared between sessions
 and has already lost work to a concurrent deploy; the Makefile refuses to run against it.
