@@ -1,0 +1,131 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/mc-agents/operator
+  # Charts must not share a repository with the image: the same tag overwrites the other.
+  CHART_REPO: oci://ghcr.io/mc-agents/charts
+  CHART_REPO_HOST: ghcr.io/mc-agents/charts
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The version check diffs against the commit this one replaced, which a shallow
+          # clone does not have.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # On a pull request the base branch is the comparison; on a push it is the commit that was
+      # replaced. A force push leaves nothing to compare against, so only the consistency half
+      # runs there.
+      - name: version is consistent and was raised
+        env:
+          FORCED: ${{ github.event.forced }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          case "$FORCED$BASE" in
+            true*|''|0000000000000000000000000000000000000000) bash hack/check-version.sh ;;
+            *) bash hack/check-version.sh "$BASE" ;;
+          esac
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+
+      - name: generated files match the types
+        run: |
+          make generate
+          git diff --exit-code -- api charts/mc-agents-operator/crds \
+            || { echo "::error::run make generate and commit the result"; exit 1; }
+
+      - name: chart renders
+        run: |
+          helm lint charts/mc-agents-operator
+          helm template charts/mc-agents-operator > /dev/null
+
+  publish:
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # ghcr.io accepts GITHUB_TOKEN, so no registry secret has to exist anywhere.
+      packages: write
+      # Lets cosign fetch a short-lived certificate from Fulcio, so no key lives in the repo.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: tag
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          stamp=$(date -u +%Y%m%d%H%M%S)
+          sha=$(git rev-parse --short=8 HEAD)
+          case "$version" in *-*) sep=. ;; *) sep=- ;; esac
+          echo "value=${version}${sep}${stamp}.g${sha}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: sigstore/cosign-installer@v3
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            VERSION=${{ steps.tag.outputs.value }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: sign image
+        run: cosign sign --yes "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+
+      - name: push chart
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          helm package charts/mc-agents-operator --version "$TAG" --app-version "$TAG" --destination dist-chart
+          printf '%s' "$GITHUB_TOKEN" \
+            | helm registry login "$REGISTRY" --username "${{ github.actor }}" --password-stdin
+          helm push "dist-chart/mc-agents-operator-$TAG.tgz" "$CHART_REPO" 2>&1 | tee push.log
+          digest=$(grep -o 'sha256:[0-9a-f]\{64\}' push.log | head -1)
+          test -n "$digest"
+          cosign sign --yes "$CHART_REPO_HOST/mc-agents-operator@$digest"
+
+      - run: |
+          {
+            echo "published \`${{ env.IMAGE }}:${{ steps.tag.outputs.value }}\`"
+            echo ""
+            echo "verify:"
+            echo '```'
+            echo "cosign verify ${{ env.IMAGE }}:${{ steps.tag.outputs.value }} \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
