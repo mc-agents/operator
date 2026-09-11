@@ -1,0 +1,30 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - copyloopvar
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - "-ST1000"
+        - "-ST1003"
+        - "-ST1021"
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - (k8s.io/client-go/tools/record.EventRecorder).Eventf
+        - (io.Closer).Close
+  exclusions:
+    paths:
+      - zz_generated\..*\.go
