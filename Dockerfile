@@ -10,7 +10,7 @@ RUN go mod download
 
 COPY api/ api/
 COPY cmd/ cmd/
-COPY pkg/ pkg/
+COPY internal/ internal/
 
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
 	-trimpath \

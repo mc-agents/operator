@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
-	"github.com/mc-agents/operator/pkg/botimage"
+	"github.com/mc-agents/operator/internal/botimage"
 )
 
 const (

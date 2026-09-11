@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mc-agents/operator/pkg/throttle"
+	"github.com/mc-agents/operator/internal/throttle"
 )
 
 func TestIntervalGateSpacesSpawns(t *testing.T) {

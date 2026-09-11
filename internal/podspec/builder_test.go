@@ -7,8 +7,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
-	"github.com/mc-agents/operator/pkg/botimage"
-	"github.com/mc-agents/operator/pkg/podspec"
+	"github.com/mc-agents/operator/internal/botimage"
+	"github.com/mc-agents/operator/internal/podspec"
 )
 
 func newBuilder() podspec.Builder {

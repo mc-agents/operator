@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
-	"github.com/mc-agents/operator/pkg/botimage"
+	"github.com/mc-agents/operator/internal/botimage"
 )
 
 func TestResolve(t *testing.T) {

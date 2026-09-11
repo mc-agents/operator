@@ -1,3 +1,5 @@
+// Package bot reconciles MinecraftBot resources into the single pod that runs
+// the bot process, and mirrors what that pod is doing back into status.
 package bot
 
 import (
@@ -10,18 +12,16 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
-	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
-	"github.com/mc-agents/operator/pkg/apiclient"
-	"github.com/mc-agents/operator/pkg/podspec"
-	"github.com/mc-agents/operator/pkg/queue"
-	"github.com/mc-agents/operator/pkg/throttle"
+	"github.com/mc-agents/operator/internal/podspec"
+	"github.com/mc-agents/operator/internal/throttle"
 )
 
 const (
@@ -33,51 +33,53 @@ const (
 )
 
 type Reconciler struct {
-	bots     apiclient.Resource[*v1alpha1.MinecraftBot]
-	lister   apiclient.Lister[*v1alpha1.MinecraftBot]
-	pods     kubernetes.Interface
-	podsFrom corev1listers.PodLister
-	builder  podspec.Builder
-	gate     throttle.Gate
+	client   client.Client
 	recorder record.EventRecorder
-	now      func() time.Time
+
+	// apiReader bypasses the cache. The pod cache is filtered to pods this
+	// operator manages, so a name clash has to be confirmed against the API
+	// server or a pod we created moments ago would read as someone else's.
+	apiReader client.Reader
+
+	builder podspec.Builder
+	gate    throttle.Gate
+	now     func() time.Time
 }
 
-func NewReconciler(
-	bots apiclient.Resource[*v1alpha1.MinecraftBot],
-	lister apiclient.Lister[*v1alpha1.MinecraftBot],
-	pods kubernetes.Interface,
-	podLister corev1listers.PodLister,
-	builder podspec.Builder,
-	gate throttle.Gate,
-	recorder record.EventRecorder,
-) *Reconciler {
+func NewReconciler(c client.Client, apiReader client.Reader, recorder record.EventRecorder, builder podspec.Builder, gate throttle.Gate) *Reconciler {
 	return &Reconciler{
-		bots:     bots,
-		lister:   lister,
-		pods:     pods,
-		podsFrom: podLister,
-		builder:  builder,
-		gate:     gate,
-		recorder: recorder,
-		now:      time.Now,
+		client:    c,
+		apiReader: apiReader,
+		recorder:  recorder,
+		builder:   builder,
+		gate:      gate,
+		now:       time.Now,
 	}
 }
 
-func (r *Reconciler) Reconcile(ctx context.Context, key types.NamespacedName) (queue.Result, error) {
-	logger := klog.FromContext(ctx)
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		Named("minecraftbot").
+		For(&v1alpha1.MinecraftBot{}).
+		Owns(&corev1.Pod{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: workers}).
+		Complete(r)
+}
 
-	cached, err := r.lister.Get(key.Namespace, key.Name)
-	if apierrors.IsNotFound(err) {
-		return queue.Result{}, nil
-	}
-	if err != nil {
-		return queue.Result{}, fmt.Errorf("get minecraftbot: %w", err)
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	var cached v1alpha1.MinecraftBot
+	if err := r.client.Get(ctx, req.NamespacedName, &cached); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("get minecraftbot: %w", err)
 	}
 	bot := cached.DeepCopy()
 
-	if bot.DeletionTimestamp != nil {
-		return queue.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
+	if !bot.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
 			Phase:              v1alpha1.BotPhaseTerminating,
 			Link:               v1alpha1.LinkStateUnknown,
 			PodName:            bot.Status.PodName,
@@ -88,7 +90,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, key types.NamespacedName) (q
 	desired, err := r.builder.Build(bot)
 	if err != nil {
 		r.recorder.Eventf(bot, corev1.EventTypeWarning, reasonInvalid, "%v", err)
-		return queue.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
+		return ctrl.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
 			Phase:              v1alpha1.BotPhaseFailed,
 			Link:               v1alpha1.LinkStateUnknown,
 			LastError:          err.Error(),
@@ -96,50 +98,42 @@ func (r *Reconciler) Reconcile(ctx context.Context, key types.NamespacedName) (q
 		})
 	}
 
-	pod, err := r.podsFrom.Pods(key.Namespace).Get(key.Name)
-	switch {
+	var pod corev1.Pod
+	switch err := r.client.Get(ctx, req.NamespacedName, &pod); {
 	case apierrors.IsNotFound(err):
 		return r.spawn(ctx, bot, desired)
 	case err != nil:
-		return queue.Result{}, fmt.Errorf("get pod: %w", err)
+		return ctrl.Result{}, fmt.Errorf("get pod: %w", err)
 	}
 
-	if owner := metav1.GetControllerOf(pod); owner == nil || owner.UID != bot.UID {
-		r.recorder.Eventf(bot, corev1.EventTypeWarning, reasonAdopted,
-			"pod %s already exists and is not owned by this bot", pod.Name)
-		return queue.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
-			Phase:              v1alpha1.BotPhaseFailed,
-			Link:               v1alpha1.LinkStateUnknown,
-			PodName:            pod.Name,
-			LastError:          fmt.Sprintf("pod %s is owned by something else", pod.Name),
-			ObservedGeneration: bot.Generation,
-		})
+	if owner := metav1.GetControllerOf(&pod); owner == nil || owner.UID != bot.UID {
+		return ctrl.Result{}, r.reportClash(ctx, bot, pod.Name)
 	}
 
-	if pod.DeletionTimestamp == nil && r.needsReplacement(pod, desired) {
+	if pod.DeletionTimestamp.IsZero() && needsReplacement(&pod, desired) {
 		logger.Info("replacing pod", "pod", pod.Name)
 		r.recorder.Eventf(bot, corev1.EventTypeNormal, reasonRecreating,
 			"pod %s no longer matches the spec", pod.Name)
-		if err := r.deletePod(ctx, pod); err != nil {
-			return queue.Result{}, err
+		if err := r.deletePod(ctx, &pod); err != nil {
+			return ctrl.Result{}, err
 		}
-		return queue.Result{RequeueAfter: time.Second}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	observed := Observe(pod)
-	return queue.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
+	observed := Observe(&pod)
+	return ctrl.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
 		Phase:              observed.Phase,
 		Link:               observed.Link,
 		PodName:            pod.Name,
-		Image:              containerImage(pod),
+		Image:              containerImage(&pod),
 		LastError:          observed.Message,
 		LastSpawnTime:      bot.Status.LastSpawnTime,
 		ObservedGeneration: bot.Generation,
 	})
 }
 
-func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desired *corev1.Pod) (queue.Result, error) {
-	logger := klog.FromContext(ctx)
+func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desired *corev1.Pod) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 
 	if ok, wait := r.gate.Acquire(r.now()); !ok {
 		logger.V(2).Info("spawn throttled", "wait", wait)
@@ -151,39 +145,46 @@ func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desi
 			LastSpawnTime:      bot.Status.LastSpawnTime,
 			ObservedGeneration: bot.Generation,
 		}); err != nil {
-			return queue.Result{}, err
+			return ctrl.Result{}, err
 		}
-		return queue.Result{RequeueAfter: wait}, nil
+		return ctrl.Result{RequeueAfter: wait}, nil
 	}
 
-	created, err := r.pods.CoreV1().Pods(desired.Namespace).Create(ctx, desired, metav1.CreateOptions{})
+	err := r.client.Create(ctx, desired)
 	if apierrors.IsAlreadyExists(err) {
-		return queue.Result{}, r.reportNameClash(ctx, bot, desired.Name)
+		return ctrl.Result{}, r.confirmClash(ctx, bot, desired.Name)
 	}
 	if err != nil {
-		return queue.Result{}, fmt.Errorf("create pod: %w", err)
+		return ctrl.Result{}, fmt.Errorf("create pod: %w", err)
 	}
-	logger.Info("pod created", "pod", created.Name, "image", containerImage(created))
-	r.recorder.Eventf(bot, corev1.EventTypeNormal, reasonSpawned, "created pod %s", created.Name)
+	logger.Info("pod created", "pod", desired.Name, "image", containerImage(desired))
+	r.recorder.Eventf(bot, corev1.EventTypeNormal, reasonSpawned, "created pod %s", desired.Name)
 
 	now := metav1.NewTime(r.now())
-	return queue.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
+	return ctrl.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
 		Phase:              v1alpha1.BotPhaseStarting,
 		Link:               v1alpha1.LinkStateUnknown,
-		PodName:            created.Name,
-		Image:              containerImage(created),
+		PodName:            desired.Name,
+		Image:              containerImage(desired),
 		LastSpawnTime:      &now,
 		ObservedGeneration: bot.Generation,
 	})
 }
 
-func (r *Reconciler) reportNameClash(ctx context.Context, bot *v1alpha1.MinecraftBot, name string) error {
-	live, err := r.pods.CoreV1().Pods(bot.Namespace).Get(ctx, name, metav1.GetOptions{})
-	if err == nil {
-		if owner := metav1.GetControllerOf(live); owner != nil && owner.UID == bot.UID {
+// confirmClash re-reads the pod straight from the API server. A create that
+// raced our own cache is not a clash; anything else is.
+func (r *Reconciler) confirmClash(ctx context.Context, bot *v1alpha1.MinecraftBot, name string) error {
+	var live corev1.Pod
+	key := client.ObjectKey{Namespace: bot.Namespace, Name: name}
+	if err := r.apiReader.Get(ctx, key, &live); err == nil {
+		if owner := metav1.GetControllerOf(&live); owner != nil && owner.UID == bot.UID {
 			return nil
 		}
 	}
+	return r.reportClash(ctx, bot, name)
+}
+
+func (r *Reconciler) reportClash(ctx context.Context, bot *v1alpha1.MinecraftBot, name string) error {
 	message := fmt.Sprintf("pod %s already exists and is not owned by this bot", name)
 	r.recorder.Event(bot, corev1.EventTypeWarning, reasonAdopted, message)
 	return r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
@@ -195,7 +196,7 @@ func (r *Reconciler) reportNameClash(ctx context.Context, bot *v1alpha1.Minecraf
 	})
 }
 
-func (r *Reconciler) needsReplacement(pod, desired *corev1.Pod) bool {
+func needsReplacement(pod, desired *corev1.Pod) bool {
 	if pod.Annotations[v1alpha1.AnnotationSpecHash] != desired.Annotations[v1alpha1.AnnotationSpecHash] {
 		return true
 	}
@@ -203,16 +204,15 @@ func (r *Reconciler) needsReplacement(pod, desired *corev1.Pod) bool {
 }
 
 func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) error {
-	opts := metav1.DeleteOptions{
-		Preconditions: &metav1.Preconditions{UID: &pod.UID},
-	}
-	err := r.pods.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, opts)
+	err := r.client.Delete(ctx, pod, client.Preconditions{UID: &pod.UID})
 	if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
 		return fmt.Errorf("delete pod %s: %w", pod.Name, err)
 	}
 	return nil
 }
 
+// writeStatus re-fetches before each attempt so the update lands on the latest
+// resourceVersion, and skips the call entirely when nothing moved.
 func (r *Reconciler) writeStatus(ctx context.Context, bot *v1alpha1.MinecraftBot, status v1alpha1.MinecraftBotStatus) error {
 	status.Conditions = append([]metav1.Condition(nil), bot.Status.Conditions...)
 	applyConditions(&status)
@@ -221,18 +221,21 @@ func (r *Reconciler) writeStatus(ctx context.Context, bot *v1alpha1.MinecraftBot
 		return nil
 	}
 
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest, err := r.bots.Get(ctx, bot.Namespace, bot.Name)
-		if err != nil {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest v1alpha1.MinecraftBot
+		if err := r.client.Get(ctx, client.ObjectKeyFromObject(bot), &latest); err != nil {
 			return err
 		}
 		if reflect.DeepEqual(latest.Status, status) {
 			return nil
 		}
 		latest.Status = status
-		_, err = r.bots.UpdateStatus(ctx, latest)
-		return err
+		return r.client.Status().Update(ctx, &latest)
 	})
+	if err != nil {
+		return fmt.Errorf("update minecraftbot status: %w", err)
+	}
+	return nil
 }
 
 func applyConditions(status *v1alpha1.MinecraftBotStatus) {

@@ -7,7 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
-	botctl "github.com/mc-agents/operator/pkg/controller/bot"
+	botctl "github.com/mc-agents/operator/internal/controller/bot"
 )
 
 func TestObserve(t *testing.T) {

@@ -1,3 +1,6 @@
+// Package pool reconciles MinecraftBotPool resources into a set of
+// ordinal-named MinecraftBots, and rolls their status back up into the counters
+// that back the scale subresource.
 package pool
 
 import (
@@ -5,7 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,15 +18,15 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
-	"github.com/mc-agents/operator/pkg/apiclient"
-	"github.com/mc-agents/operator/pkg/hash"
-	"github.com/mc-agents/operator/pkg/queue"
+	"github.com/mc-agents/operator/internal/hash"
 )
 
 const (
@@ -33,48 +36,42 @@ const (
 )
 
 type Reconciler struct {
-	pools      apiclient.Resource[*v1alpha1.MinecraftBotPool]
-	poolLister apiclient.Lister[*v1alpha1.MinecraftBotPool]
-	bots       apiclient.Resource[*v1alpha1.MinecraftBot]
-	botLister  apiclient.Lister[*v1alpha1.MinecraftBot]
-	recorder   record.EventRecorder
+	client   client.Client
+	recorder record.EventRecorder
 }
 
-func NewReconciler(
-	pools apiclient.Resource[*v1alpha1.MinecraftBotPool],
-	poolLister apiclient.Lister[*v1alpha1.MinecraftBotPool],
-	bots apiclient.Resource[*v1alpha1.MinecraftBot],
-	botLister apiclient.Lister[*v1alpha1.MinecraftBot],
-	recorder record.EventRecorder,
-) *Reconciler {
-	return &Reconciler{
-		pools:      pools,
-		poolLister: poolLister,
-		bots:       bots,
-		botLister:  botLister,
-		recorder:   recorder,
-	}
+func NewReconciler(c client.Client, recorder record.EventRecorder) *Reconciler {
+	return &Reconciler{client: c, recorder: recorder}
 }
 
-func (r *Reconciler) Reconcile(ctx context.Context, key types.NamespacedName) (queue.Result, error) {
-	logger := klog.FromContext(ctx)
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		Named("minecraftbotpool").
+		For(&v1alpha1.MinecraftBotPool{}).
+		Owns(&v1alpha1.MinecraftBot{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: workers}).
+		Complete(r)
+}
 
-	cached, err := r.poolLister.Get(key.Namespace, key.Name)
-	if apierrors.IsNotFound(err) {
-		return queue.Result{}, nil
-	}
-	if err != nil {
-		return queue.Result{}, fmt.Errorf("get minecraftbotpool: %w", err)
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	var cached v1alpha1.MinecraftBotPool
+	if err := r.client.Get(ctx, req.NamespacedName, &cached); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("get minecraftbotpool: %w", err)
 	}
 	pool := cached.DeepCopy()
 
-	if pool.DeletionTimestamp != nil {
-		return queue.Result{}, nil
+	if !pool.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
 	}
 
-	owned, err := r.ownedBots(pool)
+	owned, err := r.ownedBots(ctx, pool)
 	if err != nil {
-		return queue.Result{}, err
+		return ctrl.Result{}, err
 	}
 
 	desired := replicas(pool)
@@ -96,27 +93,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, key types.NamespacedName) (q
 
 	for _, bot := range orphans {
 		logger.Info("removing bot outside the pool size", "bot", bot.Name)
-		if err := r.bots.Delete(ctx, bot.Namespace, bot.Name, metav1.DeleteOptions{
-			Preconditions: &metav1.Preconditions{UID: &bot.UID},
-		}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
-			return queue.Result{}, fmt.Errorf("delete bot %s: %w", bot.Name, err)
+		err := r.client.Delete(ctx, bot, client.Preconditions{UID: &bot.UID})
+		if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			return ctrl.Result{}, fmt.Errorf("delete bot %s: %w", bot.Name, err)
 		}
 		r.recorder.Eventf(pool, corev1.EventTypeNormal, reasonScaledDown, "deleted bot %s", bot.Name)
 	}
 
-	for ordinal := 0; ordinal < desired; ordinal++ {
+	for ordinal := range desired {
 		existing, ok := byOrdinal[ordinal]
 		if !ok {
-			bot := r.newBot(pool, ordinal, templateHash)
-			created, err := r.bots.Create(ctx, bot)
+			bot := newBot(pool, ordinal, templateHash)
+			err := r.client.Create(ctx, bot)
 			if apierrors.IsAlreadyExists(err) {
-				return queue.Result{RequeueAfter: time.Second}, nil
+				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
 			if err != nil {
-				return queue.Result{}, fmt.Errorf("create bot %s: %w", bot.Name, err)
+				return ctrl.Result{}, fmt.Errorf("create bot %s: %w", bot.Name, err)
 			}
-			logger.Info("bot created", "bot", created.Name)
-			r.recorder.Eventf(pool, corev1.EventTypeNormal, reasonScaledUp, "created bot %s", created.Name)
+			logger.Info("bot created", "bot", bot.Name)
+			r.recorder.Eventf(pool, corev1.EventTypeNormal, reasonScaledUp, "created bot %s", bot.Name)
 			continue
 		}
 		if existing.Annotations[v1alpha1.AnnotationSpecHash] == templateHash {
@@ -125,35 +121,39 @@ func (r *Reconciler) Reconcile(ctx context.Context, key types.NamespacedName) (q
 		updated := existing.DeepCopy()
 		updated.Spec = *pool.Spec.Template.Spec.DeepCopy()
 		applyTemplateMetadata(updated, pool, templateHash)
-		if _, err := r.bots.Update(ctx, updated); err != nil {
+		if err := r.client.Update(ctx, updated); err != nil {
 			if apierrors.IsConflict(err) {
-				return queue.Result{RequeueAfter: time.Second}, nil
+				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
-			return queue.Result{}, fmt.Errorf("update bot %s: %w", updated.Name, err)
+			return ctrl.Result{}, fmt.Errorf("update bot %s: %w", updated.Name, err)
 		}
 		r.recorder.Eventf(pool, corev1.EventTypeNormal, reasonUpdated, "updated bot %s", updated.Name)
 	}
 
-	return queue.Result{}, r.writeStatus(ctx, pool, desired)
+	return ctrl.Result{}, r.writeStatus(ctx, pool, desired)
 }
 
-func (r *Reconciler) ownedBots(pool *v1alpha1.MinecraftBotPool) ([]*v1alpha1.MinecraftBot, error) {
-	selector := labels.SelectorFromSet(labels.Set{v1alpha1.LabelPool: pool.Name})
-	candidates, err := r.botLister.List(pool.Namespace, selector)
+func (r *Reconciler) ownedBots(ctx context.Context, pool *v1alpha1.MinecraftBotPool) ([]*v1alpha1.MinecraftBot, error) {
+	var list v1alpha1.MinecraftBotList
+	err := r.client.List(ctx, &list,
+		client.InNamespace(pool.Namespace),
+		client.MatchingLabels{v1alpha1.LabelPool: pool.Name},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("list bots for pool %s: %w", pool.Name, err)
 	}
-	owned := make([]*v1alpha1.MinecraftBot, 0, len(candidates))
-	for _, bot := range candidates {
+	owned := make([]*v1alpha1.MinecraftBot, 0, len(list.Items))
+	for i := range list.Items {
+		bot := &list.Items[i]
 		if owner := metav1.GetControllerOf(bot); owner != nil && owner.UID == pool.UID {
 			owned = append(owned, bot)
 		}
 	}
-	sort.Slice(owned, func(i, j int) bool { return owned[i].Name < owned[j].Name })
+	slices.SortFunc(owned, func(a, b *v1alpha1.MinecraftBot) int { return strings.Compare(a.Name, b.Name) })
 	return owned, nil
 }
 
-func (r *Reconciler) newBot(pool *v1alpha1.MinecraftBotPool, ordinal int, templateHash string) *v1alpha1.MinecraftBot {
+func newBot(pool *v1alpha1.MinecraftBotPool, ordinal int, templateHash string) *v1alpha1.MinecraftBot {
 	bot := &v1alpha1.MinecraftBot{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      botName(pool.Name, ordinal),
@@ -184,7 +184,7 @@ func applyTemplateMetadata(bot *v1alpha1.MinecraftBot, pool *v1alpha1.MinecraftB
 }
 
 func (r *Reconciler) writeStatus(ctx context.Context, pool *v1alpha1.MinecraftBotPool, desired int) error {
-	owned, err := r.ownedBots(pool)
+	owned, err := r.ownedBots(ctx, pool)
 	if err != nil {
 		return err
 	}
@@ -226,18 +226,21 @@ func (r *Reconciler) writeStatus(ctx context.Context, pool *v1alpha1.MinecraftBo
 		return nil
 	}
 
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest, err := r.pools.Get(ctx, pool.Namespace, pool.Name)
-		if err != nil {
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest v1alpha1.MinecraftBotPool
+		if err := r.client.Get(ctx, client.ObjectKeyFromObject(pool), &latest); err != nil {
 			return err
 		}
 		if reflect.DeepEqual(latest.Status, status) {
 			return nil
 		}
 		latest.Status = status
-		_, err = r.pools.UpdateStatus(ctx, latest)
-		return err
+		return r.client.Status().Update(ctx, &latest)
 	})
+	if err != nil {
+		return fmt.Errorf("update minecraftbotpool status: %w", err)
+	}
+	return nil
 }
 
 func replicas(pool *v1alpha1.MinecraftBotPool) int {

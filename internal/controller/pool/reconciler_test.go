@@ -6,12 +6,17 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
-	"github.com/mc-agents/operator/pkg/apiclient/fake"
-	poolctl "github.com/mc-agents/operator/pkg/controller/pool"
+	poolctl "github.com/mc-agents/operator/internal/controller/pool"
 )
 
 const (
@@ -20,18 +25,22 @@ const (
 	poolUID   = types.UID("pool-uid")
 )
 
+var scheme = runtime.NewScheme()
+
+func init() {
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(v1alpha1.AddToScheme(scheme))
+}
+
 type harness struct {
-	pools *fake.Resource[*v1alpha1.MinecraftBotPool]
-	bots  *fake.Resource[*v1alpha1.MinecraftBot]
-	under *poolctl.Reconciler
+	client client.Client
+	under  *poolctl.Reconciler
 }
 
 func newHarness(t *testing.T, replicas int32) *harness {
 	t.Helper()
 
-	pools := fake.NewResource[*v1alpha1.MinecraftBotPool](v1alpha1.Resource("minecraftbotpools"))
-	bots := fake.NewResource[*v1alpha1.MinecraftBot](v1alpha1.Resource("minecraftbots"))
-	pools.Seed(&v1alpha1.MinecraftBotPool{
+	pool := &v1alpha1.MinecraftBotPool{
 		ObjectMeta: metav1.ObjectMeta{Name: poolName, Namespace: namespace, UID: poolUID},
 		Spec: v1alpha1.MinecraftBotPoolSpec{
 			Replicas: &replicas,
@@ -43,30 +52,63 @@ func newHarness(t *testing.T, replicas int32) *harness {
 				},
 			},
 		},
-	})
-
-	return &harness{
-		pools: pools,
-		bots:  bots,
-		under: poolctl.NewReconciler(pools, pools.Lister(), bots, bots.Lister(), record.NewFakeRecorder(32)),
 	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.MinecraftBotPool{}, &v1alpha1.MinecraftBot{}).
+		WithObjects(pool).
+		Build()
+
+	return &harness{client: c, under: poolctl.NewReconciler(c, record.NewFakeRecorder(32))}
 }
 
 func (h *harness) reconcile(t *testing.T) {
 	t.Helper()
-	if _, err := h.under.Reconcile(context.Background(), types.NamespacedName{Namespace: namespace, Name: poolName}); err != nil {
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: poolName}}
+	if _, err := h.under.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 }
 
-func (h *harness) setReplicas(t *testing.T, replicas int32) {
+func (h *harness) pool(t *testing.T) *v1alpha1.MinecraftBotPool {
 	t.Helper()
-	pool, err := h.pools.Get(context.Background(), namespace, poolName)
-	if err != nil {
+	var pool v1alpha1.MinecraftBotPool
+	key := types.NamespacedName{Namespace: namespace, Name: poolName}
+	if err := h.client.Get(context.Background(), key, &pool); err != nil {
 		t.Fatalf("get pool: %v", err)
 	}
+	return &pool
+}
+
+func (h *harness) bot(t *testing.T, name string) *v1alpha1.MinecraftBot {
+	t.Helper()
+	var bot v1alpha1.MinecraftBot
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	if err := h.client.Get(context.Background(), key, &bot); err != nil {
+		t.Fatalf("get bot %s: %v", name, err)
+	}
+	return &bot
+}
+
+func (h *harness) botNames(t *testing.T) []string {
+	t.Helper()
+	var list v1alpha1.MinecraftBotList
+	if err := h.client.List(context.Background(), &list, client.InNamespace(namespace)); err != nil {
+		t.Fatalf("list bots: %v", err)
+	}
+	names := make([]string, 0, len(list.Items))
+	for _, bot := range list.Items {
+		names = append(names, bot.Name)
+	}
+	return names
+}
+
+func (h *harness) setReplicas(t *testing.T, replicas int32) {
+	t.Helper()
+	pool := h.pool(t)
 	pool.Spec.Replicas = &replicas
-	if _, err := h.pools.Update(context.Background(), pool); err != nil {
+	if err := h.client.Update(context.Background(), pool); err != nil {
 		t.Fatalf("update pool: %v", err)
 	}
 }
@@ -76,14 +118,11 @@ func TestPoolCreatesOrdinalBots(t *testing.T) {
 	h.reconcile(t)
 
 	want := []string{"scouts-0", "scouts-1", "scouts-2"}
-	if got := h.bots.Names(); !reflect.DeepEqual(got, want) {
+	if got := h.botNames(t); !reflect.DeepEqual(got, want) {
 		t.Fatalf("bots are %v, want %v", got, want)
 	}
 
-	bot, err := h.bots.Get(context.Background(), namespace, "scouts-0")
-	if err != nil {
-		t.Fatalf("get bot: %v", err)
-	}
+	bot := h.bot(t, "scouts-0")
 	if bot.Labels[v1alpha1.LabelPool] != poolName {
 		t.Errorf("bot is not labelled with its pool: %v", bot.Labels)
 	}
@@ -95,17 +134,10 @@ func TestPoolCreatesOrdinalBots(t *testing.T) {
 func TestPoolIsIdempotent(t *testing.T) {
 	h := newHarness(t, 2)
 	h.reconcile(t)
-	first, err := h.bots.Get(context.Background(), namespace, "scouts-1")
-	if err != nil {
-		t.Fatalf("get bot: %v", err)
-	}
+	first := h.bot(t, "scouts-1")
 
 	h.reconcile(t)
-	second, err := h.bots.Get(context.Background(), namespace, "scouts-1")
-	if err != nil {
-		t.Fatalf("get bot: %v", err)
-	}
-	if first.UID != second.UID {
+	if second := h.bot(t, "scouts-1"); first.UID != second.UID {
 		t.Fatal("a second reconcile replaced a bot that was already correct")
 	}
 }
@@ -118,7 +150,7 @@ func TestPoolScalesDownFromTheTop(t *testing.T) {
 	h.reconcile(t)
 
 	want := []string{"scouts-0", "scouts-1"}
-	if got := h.bots.Names(); !reflect.DeepEqual(got, want) {
+	if got := h.botNames(t); !reflect.DeepEqual(got, want) {
 		t.Fatalf("bots are %v, want %v; scaling down must keep the lowest ordinals", got, want)
 	}
 }
@@ -130,7 +162,7 @@ func TestPoolScalesToZero(t *testing.T) {
 	h.setReplicas(t, 0)
 	h.reconcile(t)
 
-	if got := h.bots.Names(); len(got) != 0 {
+	if got := h.botNames(t); len(got) != 0 {
 		t.Fatalf("bots are %v, want none", got)
 	}
 }
@@ -139,22 +171,15 @@ func TestPoolRewritesBotsWhenTheTemplateChanges(t *testing.T) {
 	h := newHarness(t, 1)
 	h.reconcile(t)
 
-	pool, err := h.pools.Get(context.Background(), namespace, poolName)
-	if err != nil {
-		t.Fatalf("get pool: %v", err)
-	}
+	pool := h.pool(t)
 	pool.Spec.Template.Spec.Server.Host = "mcp.staging.svc"
-	if _, err := h.pools.Update(context.Background(), pool); err != nil {
+	if err := h.client.Update(context.Background(), pool); err != nil {
 		t.Fatalf("update pool: %v", err)
 	}
 	h.reconcile(t)
 
-	bot, err := h.bots.Get(context.Background(), namespace, "scouts-0")
-	if err != nil {
-		t.Fatalf("get bot: %v", err)
-	}
-	if bot.Spec.Server.Host != "mcp.staging.svc" {
-		t.Fatalf("bot still points at %q", bot.Spec.Server.Host)
+	if host := h.bot(t, "scouts-0").Spec.Server.Host; host != "mcp.staging.svc" {
+		t.Fatalf("bot still points at %q", host)
 	}
 }
 
@@ -162,21 +187,15 @@ func TestPoolStatusCountsLinkedBots(t *testing.T) {
 	h := newHarness(t, 2)
 	h.reconcile(t)
 
-	bot, err := h.bots.Get(context.Background(), namespace, "scouts-0")
-	if err != nil {
-		t.Fatalf("get bot: %v", err)
-	}
+	bot := h.bot(t, "scouts-0")
 	bot.Status.Phase = v1alpha1.BotPhaseRunning
 	bot.Status.Link = v1alpha1.LinkStateLinked
-	if _, err := h.bots.Update(context.Background(), bot); err != nil {
-		t.Fatalf("update bot: %v", err)
+	if err := h.client.Status().Update(context.Background(), bot); err != nil {
+		t.Fatalf("update bot status: %v", err)
 	}
 	h.reconcile(t)
 
-	pool, err := h.pools.Get(context.Background(), namespace, poolName)
-	if err != nil {
-		t.Fatalf("get pool: %v", err)
-	}
+	pool := h.pool(t)
 	if pool.Status.Replicas != 2 {
 		t.Errorf("status.replicas is %d, want 2", pool.Status.Replicas)
 	}
