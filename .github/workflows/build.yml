@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE: ghcr.io/mc-agents/operator
+  REGISTRY: junhyung.cloud
+  IMAGE: junhyung.cloud/library/operator
   # Charts must not share a repository with the image: the same tag overwrites the other.
-  CHART_REPO: oci://ghcr.io/mc-agents/charts
-  CHART_REPO_HOST: ghcr.io/mc-agents/charts
+  CHART_REPO: oci://junhyung.cloud/library/charts
+  CHART_REPO_HOST: junhyung.cloud/library/charts
 
 jobs:
   check:
@@ -63,8 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # ghcr.io accepts GITHUB_TOKEN, so no registry secret has to exist anywhere.
-      packages: write
+      # Harbor takes a robot account, so the credentials are repository secrets. cosign
+      # stays keyless: the certificate comes from Fulcio and no key lives here either.
       # Lets cosign fetch a short-lived certificate from Fulcio, so no key lives in the repo.
       id-token: write
     steps:
@@ -83,8 +83,8 @@ jobs:
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
 
       - uses: sigstore/cosign-installer@v3
 
@@ -110,11 +110,12 @@ jobs:
       - name: push chart
         env:
           TAG: ${{ steps.tag.outputs.value }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
         run: |
           helm package charts/mc-agents-operator --version "$TAG" --app-version "$TAG" --destination dist-chart
-          printf '%s' "$GITHUB_TOKEN" \
-            | helm registry login "$REGISTRY" --username "${{ github.actor }}" --password-stdin
+          printf '%s' "$REGISTRY_PASSWORD" \
+            | helm registry login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
           helm push "dist-chart/mc-agents-operator-$TAG.tgz" "$CHART_REPO" 2>&1 | tee push.log
           digest=$(grep -o 'sha256:[0-9a-f]\{64\}' push.log | head -1)
           test -n "$digest"

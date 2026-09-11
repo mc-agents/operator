@@ -8,7 +8,7 @@ CMD := mc-agents-operator
 VERSION ?= $(shell cat VERSION)
 
 CHART := charts/mc-agents-operator
-IMAGE ?= ghcr.io/mc-agents/operator
+IMAGE ?= junhyung.cloud/library/operator
 K3D_IMAGE := mc-agents/operator:dev
 
 # A dedicated cluster. hyperfarm-local is shared with other sessions and has already lost work

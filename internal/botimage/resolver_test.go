@@ -8,7 +8,7 @@ import (
 )
 
 func TestResolve(t *testing.T) {
-	resolver := botimage.NewResolver("ghcr.io/mc-agents", botimage.Tags{
+	resolver := botimage.NewResolver("junhyung.cloud/library", botimage.Tags{
 		Mineflayer: "0.5.0",
 		Fabric:     "0.2.0",
 	})
@@ -21,12 +21,12 @@ func TestResolve(t *testing.T) {
 		{
 			name: "mineflayer ignores the minecraft version",
 			spec: v1alpha1.MinecraftBotSpec{Kind: v1alpha1.BotKindMineflayer, MinecraftVersion: "26.1.2"},
-			want: "ghcr.io/mc-agents/bot-mineflayer:0.5.0",
+			want: "junhyung.cloud/library/bot-mineflayer:0.5.0",
 		},
 		{
 			name: "fabric pins the minecraft version in the tag",
 			spec: v1alpha1.MinecraftBotSpec{Kind: v1alpha1.BotKindFabric, MinecraftVersion: "26.1.2"},
-			want: "ghcr.io/mc-agents/bot-fabric:0.2.0-mc26.1.2",
+			want: "junhyung.cloud/library/bot-fabric:0.2.0-mc26.1.2",
 		},
 		{
 			name: "an explicit tag wins over the version suffix",
@@ -35,7 +35,7 @@ func TestResolve(t *testing.T) {
 				MinecraftVersion: "26.1.2",
 				Image:            v1alpha1.ImageOverride{Tag: "pr-42"},
 			},
-			want: "ghcr.io/mc-agents/bot-fabric:pr-42",
+			want: "junhyung.cloud/library/bot-fabric:pr-42",
 		},
 		{
 			name: "a repository that already carries a tag is left alone",
@@ -52,10 +52,10 @@ func TestResolve(t *testing.T) {
 				Kind:             v1alpha1.BotKindMineflayer,
 				MinecraftVersion: "26.1.2",
 				Image: v1alpha1.ImageOverride{
-					Repository: "ghcr.io/mc-agents/bot-mineflayer@sha256:" + zeros(64),
+					Repository: "junhyung.cloud/library/bot-mineflayer@sha256:" + zeros(64),
 				},
 			},
-			want: "ghcr.io/mc-agents/bot-mineflayer@sha256:" + zeros(64),
+			want: "junhyung.cloud/library/bot-mineflayer@sha256:" + zeros(64),
 		},
 	}
 

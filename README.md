@@ -70,8 +70,8 @@ in place, and each bot then replaces its own pod.
 
 | kind | image |
 | --- | --- |
-| `mineflayer` | `ghcr.io/mc-agents/bot-mineflayer:<tag>` |
-| `fabric` | `ghcr.io/mc-agents/bot-fabric:<tag>-mc<minecraftVersion>` |
+| `mineflayer` | `junhyung.cloud/library/bot-mineflayer:<tag>` |
+| `fabric` | `junhyung.cloud/library/bot-fabric:<tag>-mc<minecraftVersion>` |
 
 The fabric tag carries the Minecraft version because a Fabric client is compiled against one
 version's mappings. A mineflayer bot negotiates the protocol at runtime, so its image is not
@@ -180,9 +180,10 @@ and has already lost work to a concurrent deploy; the Makefile refuses to run ag
 
 `VERSION` is the single source of truth; `Chart.yaml`'s `version` and `appVersion` must match it,
 and CI checks both that they agree and that `VERSION` went up. A push to `main` publishes
-`ghcr.io/mc-agents/operator:<version>-<stamp>.g<sha>` and the chart to
-`ghcr.io/mc-agents/charts`, both signed with keyless cosign. `GITHUB_TOKEN` is the only credential,
-so there is no registry secret to rotate.
+`junhyung.cloud/library/operator:<version>-<stamp>.g<sha>` and the chart to
+`junhyung.cloud/library/charts`, both signed with keyless cosign. A Harbor robot account pushes
+them, from the repository secrets `REGISTRY_USERNAME` and `REGISTRY_PASSWORD`. Pulling needs
+neither: the `library` project allows anonymous pull.
 
 ## Known limits
 
@@ -193,7 +194,7 @@ so there is no registry secret to rotate.
   reports ready while lying about its link would be believed.
 - `Lost` is a heuristic: a running container that restarted and is not ready again. There is no
   history to distinguish it from a bot that was never linked.
-- `ghcr.io/mc-agents/mc-assets` does not exist yet, and neither do the bot images. The operator
+- `junhyung.cloud/library/mc-assets` does not exist yet, and neither do the bot images. The operator
   builds the reference and reports the pull failure honestly; nothing here can be exercised
   against a running bot until `bot-mineflayer` publishes. The asset fetcher's contract is
   `--version <mc> --dest <dir>` plus `MC_VERSION` and `MC_ASSETS_DIR`, and it belongs to whoever

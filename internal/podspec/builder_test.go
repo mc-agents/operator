@@ -13,8 +13,8 @@ import (
 
 func newBuilder() podspec.Builder {
 	return podspec.NewBuilder(
-		botimage.NewResolver("ghcr.io/mc-agents", botimage.Tags{Mineflayer: "0.5.0", Fabric: "0.2.0"}),
-		podspec.Defaults{AssetFetcherImage: "ghcr.io/mc-agents/mc-assets:0.1.0"},
+		botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Mineflayer: "0.5.0", Fabric: "0.2.0"}),
+		podspec.Defaults{AssetFetcherImage: "junhyung.cloud/library/mc-assets:0.1.0"},
 	)
 }
 
@@ -55,7 +55,7 @@ func TestFabricPodFetchesAssetsIntoAVersionedDirectory(t *testing.T) {
 		t.Fatalf("want one init container, got %d", len(pod.Spec.InitContainers))
 	}
 	init := pod.Spec.InitContainers[0]
-	if init.Image != "ghcr.io/mc-agents/mc-assets:0.1.0" {
+	if init.Image != "junhyung.cloud/library/mc-assets:0.1.0" {
 		t.Fatalf("init container image is %q", init.Image)
 	}
 	if got, want := env(pod, "MC_ASSETS_DIR"), "/mc-assets/26.1.2"; got != want {

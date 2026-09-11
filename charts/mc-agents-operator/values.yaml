@@ -4,13 +4,13 @@
 replicaCount: 1
 
 image:
-  registry: ghcr.io/mc-agents
+  registry: junhyung.cloud/library
   repository: operator
   # Empty falls back to Chart.appVersion. A promotion swaps only this value.
   tag: ""
   pullPolicy: IfNotPresent
 
-# ghcr.io is public for these images, so nothing is needed by default.
+# junhyung.cloud/library allows anonymous pull, so nothing is needed by default.
 imagePullSecrets: []
 
 nameOverride: ""
@@ -50,7 +50,7 @@ bots:
   #   <registry>/bot-mineflayer:<mineflayerTag>
   #   <registry>/bot-fabric:<fabricTag>-mc<spec.minecraftVersion>
   # so a fabric image is always pinned to one Minecraft version, and a mineflayer image is not.
-  registry: ghcr.io/mc-agents
+  registry: junhyung.cloud/library
   mineflayerTag: latest
   fabricTag: latest
 
@@ -58,7 +58,7 @@ bots:
   # ours to grant. An initContainer pulls it from the Mojang version manifest into a cache
   # volume instead. Point spec.assets.claimName at a PVC that a Job already filled to turn that
   # 200-600MB download into a mount.
-  assetFetcherImage: ghcr.io/mc-agents/mc-assets:latest
+  assetFetcherImage: junhyung.cloud/library/mc-assets:latest
 
   # Paper refuses a second login from the same address within four seconds. Bot pods each get
   # their own IP so this rarely bites, but a pool scaling from 0 to 8 creates eight pods in one
