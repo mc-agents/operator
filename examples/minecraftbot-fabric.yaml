@@ -21,9 +21,12 @@ spec:
     claimName: mc-assets-26-1-2
     prefilled: true
     readOnly: true
+  # The operator's defaults, spelled out. Measured rather than budgeted: a bot in a flat world
+  # with no resource pack sits at 1.7GiB, because under Xvfb there is no graphics card and every
+  # texture and chunk mesh is system memory.
   resources:
     requests:
       cpu: 500m
-      memory: 1536Mi
-    limits:
       memory: 2Gi
+    limits:
+      memory: 3Gi

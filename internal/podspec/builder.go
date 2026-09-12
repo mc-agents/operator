@@ -297,13 +297,17 @@ func resources(bot *v1alpha1.MinecraftBot) corev1.ResourceRequirements {
 		return bot.Spec.Resources
 	}
 	if bot.Spec.Kind == v1alpha1.BotKindFabric {
+		// Measured, not budgeted. A bot in a flat world with no resource pack sits at 1.7GiB:
+		// under Xvfb there is no graphics card, so every texture and every chunk mesh is system
+		// memory, and no client setting moves it. The old request of 1536Mi was under what the
+		// pod actually used, and a 2Gi limit left nothing for a server that pushes a pack.
 		return corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("500m"),
-				corev1.ResourceMemory: resource.MustParse("1536Mi"),
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("2Gi"),
+				corev1.ResourceMemory: resource.MustParse("3Gi"),
 			},
 		}
 	}
