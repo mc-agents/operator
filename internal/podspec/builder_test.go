@@ -1,6 +1,7 @@
 package podspec_test
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -55,7 +56,7 @@ func TestFabricPodFetchesAssetsIntoAVersionedDirectory(t *testing.T) {
 		t.Fatalf("want one init container, got %d", len(pod.Spec.InitContainers))
 	}
 	init := pod.Spec.InitContainers[0]
-	if init.Image != "junhyung.cloud/library/mc-assets:0.1.0" {
+	if init.Image != "junhyung.cloud/library/mc-assets:0.1.0-mc26.1.2" {
 		t.Fatalf("init container image is %q", init.Image)
 	}
 	if got, want := env(pod, "MC_ASSETS_DIR"), "/mc-assets/26.1.2"; got != want {
@@ -97,8 +98,8 @@ func TestPodCarriesTheLinkContract(t *testing.T) {
 	for key, want := range map[string]string{
 		"MCP_SERVER_HOST": "mcp.qa.svc",
 		"MCP_SERVER_PORT": "8765",
-		"BOT_NAME": "scout",
-		"BOT_KIND": "mineflayer",
+		"BOT_NAME":        "scout",
+		"BOT_KIND":        "mineflayer",
 	} {
 		if got := env(pod, key); got != want {
 			t.Errorf("%s is %q, want %q", key, got, want)
@@ -188,5 +189,42 @@ func TestAnExplicitNodeSelectorIsHonoured(t *testing.T) {
 	}
 	if pod.Spec.NodeSelector["pool"] != "renderers" {
 		t.Error("spec.nodeSelector was not passed through")
+	}
+}
+
+/*
+The asset fetcher is published per Minecraft version, like a fabric bot's image and for the same
+reason: it bakes the Fabric loader that bot was built against. The chart's default named a plain
+"latest" tag that has never existed in the registry.
+*/
+func TestTheAssetFetcherIsPickedForTheMinecraftVersion(t *testing.T) {
+	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindFabric))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(pod.Spec.InitContainers) != 1 {
+		t.Fatalf("a fabric bot has %d init containers, want 1", len(pod.Spec.InitContainers))
+	}
+	if got := pod.Spec.InitContainers[0].Image; !strings.HasSuffix(got, "-mc26.1.2") {
+		t.Errorf("the fetcher image is %q, which names no Minecraft version", got)
+	}
+}
+
+/* A tag that already names one, or a digest, is what the caller meant. */
+func TestAnExplicitFetcherImageIsLeftAlone(t *testing.T) {
+	for _, image := range []string{
+		"example.test/mc-assets:0.6.0-mc26.1.2",
+		"example.test/mc-assets@sha256:" + strings.Repeat("0", 64),
+	} {
+		bot := newBot(v1alpha1.BotKindFabric)
+		bot.Spec.Assets = &v1alpha1.AssetCacheSpec{FetcherImage: image}
+
+		pod, err := newBuilder().Build(bot)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if got := pod.Spec.InitContainers[0].Image; got != image {
+			t.Errorf("the fetcher image became %q, want %q", got, image)
+		}
 	}
 }

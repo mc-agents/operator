@@ -5,6 +5,7 @@ import (
 	"maps"
 	"path"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -16,17 +17,19 @@ import (
 )
 
 const (
-	ContainerName       = "bot"
-	InitContainerName   = "fetch-assets"
-	HealthPortName      = "health"
-	HealthPort          = 8080
-	WorkDir             = "/work"
-	DefaultAssetsMount  = "/mc-assets"
-	volumeWork          = "work"
-	volumeTmp           = "tmp"
-	volumeAssets        = "assets"
-	defaultGracePeriod  = 30
-	defaultFetcherImage = botimage.DefaultRegistry + "/mc-assets:latest"
+	ContainerName      = "bot"
+	InitContainerName  = "fetch-assets"
+	HealthPortName     = "health"
+	HealthPort         = 8080
+	WorkDir            = "/work"
+	DefaultAssetsMount = "/mc-assets"
+	volumeWork         = "work"
+	volumeTmp          = "tmp"
+	volumeAssets       = "assets"
+	defaultGracePeriod = 30
+	// Per Minecraft version, like a fabric bot's image and for the same reason: it bakes the
+	// Fabric loader that bot was built against. There is no plain "latest" to fall back to.
+	defaultFetcherTag = "latest"
 )
 
 type Builder interface {
@@ -46,7 +49,7 @@ type DefaultBuilder struct {
 
 func NewBuilder(images botimage.Resolver, defaults Defaults) *DefaultBuilder {
 	if defaults.AssetFetcherImage == "" {
-		defaults.AssetFetcherImage = defaultFetcherImage
+		defaults.AssetFetcherImage = botimage.DefaultRegistry + "/mc-assets:" + defaultFetcherTag
 	}
 	return &DefaultBuilder{images: images, defaults: defaults}
 }
@@ -139,7 +142,7 @@ func (b *DefaultBuilder) container(bot *v1alpha1.MinecraftBot, image string) cor
 func (b *DefaultBuilder) assetFetcher(bot *v1alpha1.MinecraftBot, assets *v1alpha1.AssetCacheSpec) corev1.Container {
 	image := assets.FetcherImage
 	if image == "" {
-		image = b.defaults.AssetFetcherImage
+		image = fetcherFor(b.defaults.AssetFetcherImage, bot.Spec.MinecraftVersion)
 	}
 	return corev1.Container{
 		Name:            InitContainerName,
@@ -225,6 +228,19 @@ func renderSpec(bot *v1alpha1.MinecraftBot) *v1alpha1.RenderSpec {
 		render.FrameRateLimit = 1
 	}
 	return render
+}
+
+// The asset fetcher is published per Minecraft version, so a tag that does not already name one
+// gets the suffix -- exactly as a fabric bot's image does. Configuring a tag that already carries
+// the suffix, or a digest, leaves it alone.
+func fetcherFor(image, minecraftVersion string) string {
+	if minecraftVersion == "" || strings.Contains(image, "@") {
+		return image
+	}
+	if strings.Contains(image, "-mc") {
+		return image
+	}
+	return image + "-mc" + minecraftVersion
 }
 
 func assetDir(bot *v1alpha1.MinecraftBot, assets *v1alpha1.AssetCacheSpec) string {
