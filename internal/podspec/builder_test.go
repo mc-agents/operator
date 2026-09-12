@@ -158,3 +158,43 @@ func volume(pod *corev1.Pod, name string) *corev1.VolumeSource {
 	}
 	return nil
 }
+
+/*
+A fabric bot's image is linux/amd64 only, and containerd refuses a platform it does not match at
+pull time. On a mixed cluster that surfaces as "no match for platform in manifest", which says
+nothing about architectures and nothing about where the pod should have gone instead.
+*/
+func TestAFabricBotIsScheduledWhereItsImageCanRun(t *testing.T) {
+	fabric, err := newBuilder().Build(newBot(v1alpha1.BotKindFabric))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := fabric.Spec.NodeSelector[corev1.LabelArchStable]; got != "amd64" {
+		t.Errorf("a fabric bot asks for %q, want amd64", got)
+	}
+
+	mineflayer, err := newBuilder().Build(newBot(v1alpha1.BotKindMineflayer))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if _, pinned := mineflayer.Spec.NodeSelector[corev1.LabelArchStable]; pinned {
+		t.Error("a mineflayer bot negotiates the protocol at runtime and runs anywhere")
+	}
+}
+
+/* Someone who says where a bot goes means it, including when they disagree with the default. */
+func TestAnExplicitNodeSelectorWins(t *testing.T) {
+	bot := newBot(v1alpha1.BotKindFabric)
+	bot.Spec.NodeSelector = map[string]string{"pool": "renderers"}
+
+	pod, err := newBuilder().Build(bot)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if pod.Spec.NodeSelector["pool"] != "renderers" {
+		t.Error("spec.nodeSelector was replaced rather than honoured")
+	}
+	if _, added := pod.Spec.NodeSelector[corev1.LabelArchStable]; added {
+		t.Error("the default was merged into an explicit selector instead of standing aside")
+	}
+}

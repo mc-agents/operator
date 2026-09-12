@@ -64,7 +64,7 @@ func (b *DefaultBuilder) Build(bot *v1alpha1.MinecraftBot) (*corev1.Pod, error) 
 		ServiceAccountName:            bot.Spec.ServiceAccountName,
 		TerminationGracePeriodSeconds: gracePeriod(bot),
 		ImagePullSecrets:              bot.Spec.ImagePullSecrets,
-		NodeSelector:                  bot.Spec.NodeSelector,
+		NodeSelector:                  nodeSelector(bot),
 		Tolerations:                   bot.Spec.Tolerations,
 		Affinity:                      bot.Spec.Affinity,
 		SecurityContext: &corev1.PodSecurityContext{
@@ -164,6 +164,22 @@ func (b *DefaultBuilder) assetFetcher(bot *v1alpha1.MinecraftBot, assets *v1alph
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
 	}
+}
+
+// A fabric bot's image is linux/amd64 only: Mojang's manifest carries no linux-arm64 LWJGL
+// natives for 26.x. containerd refuses a platform it does not match at pull time -- "no match for
+// platform in manifest" -- so on a mixed cluster the pod fails with a message about manifests
+// rather than about architectures, and nothing suggests where it should have been scheduled.
+//
+// spec.nodeSelector wins when it is set, including when it deliberately says something else.
+func nodeSelector(bot *v1alpha1.MinecraftBot) map[string]string {
+	if len(bot.Spec.NodeSelector) > 0 {
+		return bot.Spec.NodeSelector
+	}
+	if bot.Spec.Kind != v1alpha1.BotKindFabric {
+		return nil
+	}
+	return map[string]string{corev1.LabelArchStable: "amd64"}
 }
 
 func containerEnv(bot *v1alpha1.MinecraftBot) []corev1.EnvVar {

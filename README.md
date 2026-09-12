@@ -78,6 +78,13 @@ version's mappings. A mineflayer bot negotiates the protocol at runtime, so its 
 version-specific. `spec.image.repository` and `spec.image.tag` override either; a repository that
 already carries a tag or a digest is used verbatim.
 
+**A fabric bot is scheduled onto an amd64 node**, because its image is `linux/amd64` only: Mojang's
+manifest has no linux-arm64 LWJGL natives for 26.x. containerd refuses a platform it does not match
+at pull time, and the message it gives -- `no match for platform in manifest` -- says nothing about
+architectures, so the operator asks for the right node instead of letting the pod land anywhere and
+fail obscurely. Emulation does not help: there is nothing to emulate, because the image is never
+unpacked. `spec.nodeSelector` wins when it is set, including when it deliberately says otherwise.
+
 ### Client assets
 
 A fabric bot cannot ship the Minecraft client jar inside its image — that is not ours to
