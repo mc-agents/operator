@@ -6,12 +6,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// +kubebuilder:validation:Enum=mineflayer;fabric
+// One kind of bot exists: a real Minecraft client. There were two, and the machinery for telling
+// them apart is kept -- in the catalogue, in the bot protocol and here -- so that a third does not
+// have to reinvent it.
+//
+// +kubebuilder:validation:Enum=fabric
 type BotKind string
 
 const (
-	BotKindMineflayer BotKind = "mineflayer"
-	BotKindFabric     BotKind = "fabric"
+	BotKindFabric BotKind = "fabric"
 )
 
 // +kubebuilder:validation:Enum=Pending;Starting;Running;Failed;Terminating
@@ -115,8 +118,9 @@ type AssetCacheSpec struct {
 // +kubebuilder:validation:XValidation:rule="self.kind == 'fabric' || !has(self.render)",message="render is fabric-only"
 // +kubebuilder:validation:XValidation:rule="self.kind == 'fabric' || !has(self.assets)",message="assets is fabric-only"
 type MinecraftBotSpec struct {
-	// +kubebuilder:validation:Required
-	Kind BotKind `json:"kind"`
+	// +kubebuilder:default=fabric
+	// +optional
+	Kind BotKind `json:"kind,omitempty"`
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+(\.[0-9]+)?$`

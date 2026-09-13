@@ -9,7 +9,7 @@ spec:
       labels:
         squad: qa
     spec:
-      kind: mineflayer
+      kind: fabric
       minecraftVersion: "26.1.2"
       server:
         host: mc-mcp-server.mc-agents.svc

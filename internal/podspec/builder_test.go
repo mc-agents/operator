@@ -14,7 +14,7 @@ import (
 
 func newBuilder() podspec.Builder {
 	return podspec.NewBuilder(
-		botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Mineflayer: "0.5.0", Fabric: "0.2.0"}),
+		botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Fabric: "0.2.0"}),
 		podspec.Defaults{AssetFetcherImage: "junhyung.cloud/library/mc-assets:0.1.0"},
 	)
 }
@@ -27,22 +27,6 @@ func newBot(kind v1alpha1.BotKind) *v1alpha1.MinecraftBot {
 			MinecraftVersion: "26.1.2",
 			Server:           v1alpha1.MCPServerRef{Host: "mcp.qa.svc", Port: 8765},
 		},
-	}
-}
-
-func TestMineflayerPodHasNoAssetPlumbing(t *testing.T) {
-	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindMineflayer))
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	if len(pod.Spec.InitContainers) != 0 {
-		t.Fatalf("mineflayer pods must not fetch client assets, got %d init containers", len(pod.Spec.InitContainers))
-	}
-	if volume(pod, "assets") != nil {
-		t.Fatal("mineflayer pods must not carry an assets volume")
-	}
-	if env(pod, "MC_ASSETS_DIR") != "" {
-		t.Fatal("mineflayer pods must not advertise an assets directory")
 	}
 }
 
@@ -91,7 +75,7 @@ func TestPrefilledAssetsSkipTheFetcher(t *testing.T) {
 }
 
 func TestPodCarriesTheLinkContract(t *testing.T) {
-	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindMineflayer))
+	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindFabric))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -99,7 +83,7 @@ func TestPodCarriesTheLinkContract(t *testing.T) {
 		"MCP_SERVER_HOST": "mcp.qa.svc",
 		"MCP_SERVER_PORT": "8765",
 		"BOT_NAME":        "scout",
-		"BOT_KIND":        "mineflayer",
+		"BOT_KIND":        "fabric",
 	} {
 		if got := env(pod, key); got != want {
 			t.Errorf("%s is %q, want %q", key, got, want)
@@ -119,11 +103,11 @@ func TestPodCarriesTheLinkContract(t *testing.T) {
 func TestSpecHashTracksTheSpec(t *testing.T) {
 	builder := newBuilder()
 
-	base, err := builder.Build(newBot(v1alpha1.BotKindMineflayer))
+	base, err := builder.Build(newBot(v1alpha1.BotKindFabric))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	same, err := builder.Build(newBot(v1alpha1.BotKindMineflayer))
+	same, err := builder.Build(newBot(v1alpha1.BotKindFabric))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -131,7 +115,7 @@ func TestSpecHashTracksTheSpec(t *testing.T) {
 		t.Fatal("the same spec must hash the same, or every reconcile would recreate the pod")
 	}
 
-	changed := newBot(v1alpha1.BotKindMineflayer)
+	changed := newBot(v1alpha1.BotKindFabric)
 	changed.Spec.Server.Host = "elsewhere.qa.svc"
 	moved, err := builder.Build(changed)
 	if err != nil {
@@ -167,7 +151,7 @@ LWJGL's own arm64 natives now and the image is multi-architecture, so nothing he
 for anybody.
 */
 func TestNothingIsPinnedToAnArchitecture(t *testing.T) {
-	for _, kind := range []v1alpha1.BotKind{v1alpha1.BotKindFabric, v1alpha1.BotKindMineflayer} {
+	for _, kind := range []v1alpha1.BotKind{v1alpha1.BotKindFabric, v1alpha1.BotKindFabric} {
 		pod, err := newBuilder().Build(newBot(kind))
 		if err != nil {
 			t.Fatalf("Build(%s): %v", kind, err)

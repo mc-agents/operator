@@ -90,8 +90,7 @@ func run(ctx context.Context, opts options) error {
 	c := mgr.GetClient()
 
 	images := botimage.NewResolver(opts.botRegistry, botimage.Tags{
-		Mineflayer: opts.mineflayerTag,
-		Fabric:     opts.fabricTag,
+		Fabric: opts.fabricTag,
 	})
 	builder := podspec.NewBuilder(images, podspec.Defaults{AssetFetcherImage: opts.assetFetcherImage})
 	gate := throttle.NewIntervalGate(opts.spawnInterval)

@@ -46,7 +46,7 @@ func newHarness(t *testing.T, replicas int32) *harness {
 			Replicas: &replicas,
 			Template: v1alpha1.MinecraftBotTemplate{
 				Spec: v1alpha1.MinecraftBotSpec{
-					Kind:             v1alpha1.BotKindMineflayer,
+					Kind:             v1alpha1.BotKindFabric,
 					MinecraftVersion: "26.1.2",
 					Server:           v1alpha1.MCPServerRef{Host: "mcp.qa.svc", Port: 8765},
 				},

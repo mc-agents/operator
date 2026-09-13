@@ -53,7 +53,6 @@ spec:
             - --leader-elect-namespace={{ .Values.leaderElection.namespace }}
             - --leader-elect-lease-duration={{ .Values.leaderElection.leaseDuration }}
             - --bot-registry={{ .Values.bots.registry }}
-            - --mineflayer-tag={{ .Values.bots.mineflayerTag }}
             - --fabric-tag={{ .Values.bots.fabricTag }}
             - --asset-fetcher-image={{ .Values.bots.assetFetcherImage }}
             - --spawn-interval={{ .Values.bots.spawnInterval }}

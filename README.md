@@ -26,7 +26,7 @@ kind: MinecraftBot
 metadata:
   name: scout
 spec:
-  kind: mineflayer          # or fabric
+  kind: fabric              # the default, and the only kind
   minecraftVersion: "26.1.2"
   server:
     host: mc-mcp-server.mc-agents.svc
@@ -36,7 +36,7 @@ spec:
 ```console
 $ kubectl get minecraftbots
 NAME       KIND         MC       PHASE     LINK      POD        AGE
-scout      mineflayer   26.1.2   Running   Linked    scout      4m
+scout      fabric       26.1.2   Running   Linked    scout      4m
 looker     fabric       26.1.2   Starting  Waiting   looker     20s
 ```
 
@@ -58,7 +58,7 @@ A pool exists because "scale the bots" is the request, and one CR per bot makes 
 $ kubectl scale minecraftbotpool/scouts --replicas=8
 $ kubectl get minecraftbotpools
 NAME     DESIRED   CURRENT   LINKED   KIND         MC       AGE
-scouts   8         8         6        mineflayer   26.1.2   11m
+scouts   8         8         6        fabric       26.1.2   11m
 ```
 
 Bots are named by ordinal (`scouts-0`…`scouts-7`) rather than with a random suffix, because agents
@@ -70,13 +70,15 @@ in place, and each bot then replaces its own pod.
 
 | kind | image |
 | --- | --- |
-| `mineflayer` | `junhyung.cloud/library/bot-mineflayer:<tag>` |
 | `fabric` | `junhyung.cloud/library/bot-fabric:<tag>-mc<minecraftVersion>` |
 
-The fabric tag carries the Minecraft version because a Fabric client is compiled against one
-version's mappings. A mineflayer bot negotiates the protocol at runtime, so its image is not
-version-specific. `spec.image.repository` and `spec.image.tag` override either; a repository that
-already carries a tag or a digest is used verbatim.
+The tag carries the Minecraft version because a Fabric client is compiled against one version's
+mappings. `spec.image.repository` and `spec.image.tag` override it; a repository that already
+carries a tag or a digest is used verbatim.
+
+One kind exists. There were two, and `spec.kind` is kept -- with `fabric` as its default and only
+value -- so that a second does not have to be reinvented; the same is true of the catalogue and
+the bot protocol.
 
 
 ### Client assets

@@ -46,12 +46,10 @@ leaderElection:
   leaseDuration: 15s
 
 bots:
-  # Where the bot images live. The operator builds
-  #   <registry>/bot-mineflayer:<mineflayerTag>
+  # Where the bot image lives. The operator builds
   #   <registry>/bot-fabric:<fabricTag>-mc<spec.minecraftVersion>
-  # so a fabric image is always pinned to one Minecraft version, and a mineflayer image is not.
+  # so an image is always pinned to one Minecraft version: a fabric client is built against one.
   registry: junhyung.cloud/library
-  mineflayerTag: latest
   fabricTag: latest
 
   # fabric bots cannot ship the Minecraft client jar inside the image: redistribution is not

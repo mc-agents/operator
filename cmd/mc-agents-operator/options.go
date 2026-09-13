@@ -22,7 +22,6 @@ type options struct {
 	leaderElectLeaseDuration time.Duration
 
 	botRegistry       string
-	mineflayerTag     string
 	fabricTag         string
 	assetFetcherImage string
 	spawnInterval     time.Duration
@@ -37,7 +36,6 @@ func defaultOptions() options {
 		leaderElectID:            componentName + "." + v1alpha1.GroupName,
 		leaderElectLeaseDuration: 15 * time.Second,
 		botRegistry:              botimage.DefaultRegistry,
-		mineflayerTag:            "latest",
 		fabricTag:                "latest",
 		spawnInterval:            4 * time.Second,
 	}
@@ -66,8 +64,6 @@ func (o *options) bind(fs *flag.FlagSet) {
 
 	fs.StringVar(&o.botRegistry, "bot-registry", o.botRegistry,
 		"registry and namespace holding the bot images")
-	fs.StringVar(&o.mineflayerTag, "mineflayer-tag", o.mineflayerTag,
-		"default tag for bot-mineflayer images")
 	fs.StringVar(&o.fabricTag, "fabric-tag", o.fabricTag,
 		"default tag for bot-fabric images; the Minecraft version is appended as -mc<version>")
 	fs.StringVar(&o.assetFetcherImage, "asset-fetcher-image", o.assetFetcherImage,

@@ -14,8 +14,7 @@ type Resolver interface {
 }
 
 type Tags struct {
-	Mineflayer string
-	Fabric     string
+	Fabric string
 }
 
 type DefaultResolver struct {
@@ -54,11 +53,6 @@ func (r *DefaultResolver) tag(spec *v1alpha1.MinecraftBotSpec) (string, error) {
 		return spec.Image.Tag, nil
 	}
 	switch spec.Kind {
-	case v1alpha1.BotKindMineflayer:
-		if r.tags.Mineflayer == "" {
-			return "", fmt.Errorf("no default tag configured for %s bots", spec.Kind)
-		}
-		return r.tags.Mineflayer, nil
 	case v1alpha1.BotKindFabric:
 		if r.tags.Fabric == "" {
 			return "", fmt.Errorf("no default tag configured for %s bots", spec.Kind)

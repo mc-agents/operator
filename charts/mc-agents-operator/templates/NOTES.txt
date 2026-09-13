@@ -8,7 +8,7 @@ Create a bot:
   metadata:
     name: scout
   spec:
-    kind: mineflayer
+    kind: fabric
     minecraftVersion: "26.1.2"
     server:
       host: mc-mcp-server.{{ .Release.Namespace }}.svc

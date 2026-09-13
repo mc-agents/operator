@@ -1284,8 +1284,12 @@ spec:
                           x-kubernetes-map-type: atomic
                         type: array
                       kind:
+                        default: fabric
+                        description: |-
+                          One kind of bot exists: a real Minecraft client. There were two, and the machinery for telling
+                          them apart is kept -- in the catalogue, in the bot protocol and here -- so that a third does not
+                          have to reinvent it.
                         enum:
-                        - mineflayer
                         - fabric
                         type: string
                       minecraftVersion:
@@ -1445,7 +1449,6 @@ spec:
                           type: object
                         type: array
                     required:
-                    - kind
                     - minecraftVersion
                     - server
                     type: object

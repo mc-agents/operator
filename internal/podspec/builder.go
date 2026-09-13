@@ -38,7 +38,6 @@ type Builder interface {
 
 type Defaults struct {
 	AssetFetcherImage string
-	MineflayerImage   string
 	FabricImage       string
 }
 

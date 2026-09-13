@@ -8,21 +8,13 @@ import (
 )
 
 func TestResolve(t *testing.T) {
-	resolver := botimage.NewResolver("junhyung.cloud/library", botimage.Tags{
-		Mineflayer: "0.5.0",
-		Fabric:     "0.2.0",
-	})
+	resolver := botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Fabric: "0.2.0"})
 
 	cases := []struct {
 		name string
 		spec v1alpha1.MinecraftBotSpec
 		want string
 	}{
-		{
-			name: "mineflayer ignores the minecraft version",
-			spec: v1alpha1.MinecraftBotSpec{Kind: v1alpha1.BotKindMineflayer, MinecraftVersion: "26.1.2"},
-			want: "junhyung.cloud/library/bot-mineflayer:0.5.0",
-		},
 		{
 			name: "fabric pins the minecraft version in the tag",
 			spec: v1alpha1.MinecraftBotSpec{Kind: v1alpha1.BotKindFabric, MinecraftVersion: "26.1.2"},
@@ -49,13 +41,13 @@ func TestResolve(t *testing.T) {
 		{
 			name: "a digest reference survives untouched",
 			spec: v1alpha1.MinecraftBotSpec{
-				Kind:             v1alpha1.BotKindMineflayer,
+				Kind:             v1alpha1.BotKindFabric,
 				MinecraftVersion: "26.1.2",
 				Image: v1alpha1.ImageOverride{
-					Repository: "junhyung.cloud/library/bot-mineflayer@sha256:" + zeros(64),
+					Repository: "junhyung.cloud/library/bot-fabric@sha256:" + zeros(64),
 				},
 			},
-			want: "junhyung.cloud/library/bot-mineflayer@sha256:" + zeros(64),
+			want: "junhyung.cloud/library/bot-fabric@sha256:" + zeros(64),
 		},
 	}
 
@@ -73,7 +65,7 @@ func TestResolve(t *testing.T) {
 }
 
 func TestResolveRejectsUnknownKind(t *testing.T) {
-	resolver := botimage.NewResolver("", botimage.Tags{Mineflayer: "1", Fabric: "1"})
+	resolver := botimage.NewResolver("", botimage.Tags{Fabric: "1"})
 	if _, err := resolver.Resolve(&v1alpha1.MinecraftBotSpec{Kind: "quake"}); err == nil {
 		t.Fatal("expected an error for an unknown bot kind")
 	}
