@@ -14,7 +14,7 @@ import (
 
 func newBuilder() podspec.Builder {
 	return podspec.NewBuilder(
-		botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Fabric: "0.2.0"}),
+		botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Fabric: "0.2.0", Azalea: "0.4.0"}),
 		podspec.Defaults{AssetFetcherImage: "junhyung.cloud/library/mc-assets:0.1.0"},
 	)
 }
@@ -27,6 +27,22 @@ func newBot(kind v1alpha1.BotKind) *v1alpha1.MinecraftBot {
 			MinecraftVersion: "26.1.2",
 			Server:           v1alpha1.MCPServerRef{Host: "mcp.qa.svc", Port: 8765},
 		},
+	}
+}
+
+func TestAzaleaPodHasNoAssetPlumbing(t *testing.T) {
+	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindAzalea))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(pod.Spec.InitContainers) != 0 {
+		t.Fatalf("azalea pods must not fetch client assets, got %d init containers", len(pod.Spec.InitContainers))
+	}
+	if volume(pod, "assets") != nil {
+		t.Fatal("azalea pods must not carry an assets volume")
+	}
+	if env(pod, "MC_ASSETS_DIR") != "" {
+		t.Fatal("azalea pods must not advertise an assets directory")
 	}
 }
 
@@ -151,7 +167,7 @@ LWJGL's own arm64 natives now and the image is multi-architecture, so nothing he
 for anybody.
 */
 func TestNothingIsPinnedToAnArchitecture(t *testing.T) {
-	for _, kind := range []v1alpha1.BotKind{v1alpha1.BotKindFabric, v1alpha1.BotKindFabric} {
+	for _, kind := range []v1alpha1.BotKind{v1alpha1.BotKindFabric, v1alpha1.BotKindAzalea} {
 		pod, err := newBuilder().Build(newBot(kind))
 		if err != nil {
 			t.Fatalf("Build(%s): %v", kind, err)

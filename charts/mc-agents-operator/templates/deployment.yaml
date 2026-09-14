@@ -54,6 +54,7 @@ spec:
             - --leader-elect-lease-duration={{ .Values.leaderElection.leaseDuration }}
             - --bot-registry={{ .Values.bots.registry }}
             - --fabric-tag={{ .Values.bots.fabricTag }}
+            - --azalea-tag={{ .Values.bots.azaleaTag }}
             - --asset-fetcher-image={{ .Values.bots.assetFetcherImage }}
             - --spawn-interval={{ .Values.bots.spawnInterval }}
             {{- with .Values.extraArgs }}

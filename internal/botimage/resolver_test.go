@@ -8,13 +8,18 @@ import (
 )
 
 func TestResolve(t *testing.T) {
-	resolver := botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Fabric: "0.2.0"})
+	resolver := botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Fabric: "0.2.0", Azalea: "0.4.0"})
 
 	cases := []struct {
 		name string
 		spec v1alpha1.MinecraftBotSpec
 		want string
 	}{
+		{
+			name: "azalea pins the minecraft version in the tag",
+			spec: v1alpha1.MinecraftBotSpec{Kind: v1alpha1.BotKindAzalea, MinecraftVersion: "26.1.2"},
+			want: "junhyung.cloud/library/bot-azalea:0.4.0-mc26.1.2",
+		},
 		{
 			name: "fabric pins the minecraft version in the tag",
 			spec: v1alpha1.MinecraftBotSpec{Kind: v1alpha1.BotKindFabric, MinecraftVersion: "26.1.2"},

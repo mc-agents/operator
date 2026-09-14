@@ -46,11 +46,13 @@ leaderElection:
   leaseDuration: 15s
 
 bots:
-  # Where the bot image lives. The operator builds
+  # Where the bot images live. The operator builds
   #   <registry>/bot-fabric:<fabricTag>-mc<spec.minecraftVersion>
-  # so an image is always pinned to one Minecraft version: a fabric client is built against one.
+  #   <registry>/bot-azalea:<azaleaTag>-mc<spec.minecraftVersion>
+  # so an image is always pinned to one Minecraft version: each kind is built against one.
   registry: junhyung.cloud/library
   fabricTag: latest
+  azaleaTag: latest
 
   # fabric bots cannot ship the Minecraft client jar inside the image: redistribution is not
   # ours to grant. An initContainer pulls it from the Mojang version manifest into a cache

@@ -15,6 +15,7 @@ type Resolver interface {
 
 type Tags struct {
 	Fabric string
+	Azalea string
 }
 
 type DefaultResolver struct {
@@ -52,18 +53,23 @@ func (r *DefaultResolver) tag(spec *v1alpha1.MinecraftBotSpec) (string, error) {
 	if spec.Image.Tag != "" {
 		return spec.Image.Tag, nil
 	}
+	// Both kinds are built against one protocol version, so both tags carry it.
+	var tag string
 	switch spec.Kind {
 	case v1alpha1.BotKindFabric:
-		if r.tags.Fabric == "" {
-			return "", fmt.Errorf("no default tag configured for %s bots", spec.Kind)
-		}
-		if spec.MinecraftVersion == "" {
-			return "", fmt.Errorf("fabric bots need spec.minecraftVersion to pick an image")
-		}
-		return fmt.Sprintf("%s-mc%s", r.tags.Fabric, spec.MinecraftVersion), nil
+		tag = r.tags.Fabric
+	case v1alpha1.BotKindAzalea:
+		tag = r.tags.Azalea
 	default:
 		return "", fmt.Errorf("unknown bot kind %q", spec.Kind)
 	}
+	if tag == "" {
+		return "", fmt.Errorf("no default tag configured for %s bots", spec.Kind)
+	}
+	if spec.MinecraftVersion == "" {
+		return "", fmt.Errorf("%s bots need spec.minecraftVersion to pick an image", spec.Kind)
+	}
+	return fmt.Sprintf("%s-mc%s", tag, spec.MinecraftVersion), nil
 }
 
 func pinned(repository string) (string, bool) {

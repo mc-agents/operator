@@ -6,15 +6,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// One kind of bot exists: a real Minecraft client. There were two, and the machinery for telling
-// them apart is kept -- in the catalogue, in the bot protocol and here -- so that a third does not
-// have to reinvent it.
+// fabric is a real Minecraft client: it renders, takes screenshots and draws a resource pack, and
+// costs about 2GiB. azalea speaks the protocol without a client, at a few MiB, for the many bots a
+// scenario can need at once and for the tools that do not need to see anything.
 //
-// +kubebuilder:validation:Enum=fabric
+// +kubebuilder:validation:Enum=fabric;azalea
 type BotKind string
 
 const (
 	BotKindFabric BotKind = "fabric"
+	BotKindAzalea BotKind = "azalea"
 )
 
 // +kubebuilder:validation:Enum=Pending;Starting;Running;Failed;Terminating

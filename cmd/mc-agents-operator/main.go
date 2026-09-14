@@ -91,6 +91,7 @@ func run(ctx context.Context, opts options) error {
 
 	images := botimage.NewResolver(opts.botRegistry, botimage.Tags{
 		Fabric: opts.fabricTag,
+		Azalea: opts.azaleaTag,
 	})
 	builder := podspec.NewBuilder(images, podspec.Defaults{AssetFetcherImage: opts.assetFetcherImage})
 	gate := throttle.NewIntervalGate(opts.spawnInterval)

@@ -23,6 +23,7 @@ type options struct {
 
 	botRegistry       string
 	fabricTag         string
+	azaleaTag         string
 	assetFetcherImage string
 	spawnInterval     time.Duration
 }
@@ -37,6 +38,7 @@ func defaultOptions() options {
 		leaderElectLeaseDuration: 15 * time.Second,
 		botRegistry:              botimage.DefaultRegistry,
 		fabricTag:                "latest",
+		azaleaTag:                "latest",
 		spawnInterval:            4 * time.Second,
 	}
 }
@@ -66,6 +68,8 @@ func (o *options) bind(fs *flag.FlagSet) {
 		"registry and namespace holding the bot images")
 	fs.StringVar(&o.fabricTag, "fabric-tag", o.fabricTag,
 		"default tag for bot-fabric images; the Minecraft version is appended as -mc<version>")
+	fs.StringVar(&o.azaleaTag, "azalea-tag", o.azaleaTag,
+		"default tag for bot-azalea images; the Minecraft version is appended as -mc<version>")
 	fs.StringVar(&o.assetFetcherImage, "asset-fetcher-image", o.assetFetcherImage,
 		"image of the initContainer that pulls the client jar and assets from the Mojang manifest")
 	fs.DurationVar(&o.spawnInterval, "spawn-interval", o.spawnInterval,

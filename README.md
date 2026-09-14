@@ -26,7 +26,7 @@ kind: MinecraftBot
 metadata:
   name: scout
 spec:
-  kind: fabric              # the default, and the only kind
+  kind: fabric              # the default; azalea for a bot without a client
   minecraftVersion: "26.1.2"
   server:
     host: mc-mcp-server.mc-agents.svc
@@ -71,14 +71,15 @@ in place, and each bot then replaces its own pod.
 | kind | image |
 | --- | --- |
 | `fabric` | `junhyung.cloud/library/bot-fabric:<tag>-mc<minecraftVersion>` |
+| `azalea` | `junhyung.cloud/library/bot-azalea:<tag>-mc<minecraftVersion>` |
 
-The tag carries the Minecraft version because a Fabric client is compiled against one version's
-mappings. `spec.image.repository` and `spec.image.tag` override it; a repository that already
-carries a tag or a digest is used verbatim.
+The tag carries the Minecraft version because each kind is built against one version: a Fabric
+client against its mappings, azalea against its protocol. `spec.image.repository` and
+`spec.image.tag` override it; a repository that already carries a tag or a digest is used verbatim.
 
-One kind exists. There were two, and `spec.kind` is kept -- with `fabric` as its default and only
-value -- so that a second does not have to be reinvented; the same is true of the catalogue and
-the bot protocol.
+`fabric` is a real client. It renders, so it can take a screenshot and draw a resource pack, and it
+needs about 2GiB. `azalea` speaks the protocol with no client at a few MiB, which is what a
+scenario with many bots at once wants; the catalogue says which tools each kind answers.
 
 
 ### Client assets
