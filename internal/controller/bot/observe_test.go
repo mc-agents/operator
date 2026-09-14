@@ -92,12 +92,33 @@ func TestObserveCrashLoopBeatsRunning(t *testing.T) {
 	pod.Status.ContainerStatuses[0].State = corev1.ContainerState{
 		Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff", Message: "back-off 5m0s"},
 	}
+	pod.Status.ContainerStatuses[0].LastTerminationState = corev1.ContainerState{
+		Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error", Message: "fetch failed: connection reset"},
+	}
 	got := botctl.Observe(pod)
 	if got.Phase != v1alpha1.BotPhaseFailed {
 		t.Fatalf("phase is %q, want Failed", got.Phase)
 	}
 	if !strings.Contains(got.Message, "CrashLoopBackOff") {
 		t.Fatalf("message %q does not name the reason", got.Message)
+	}
+	if !strings.Contains(got.Message, "exited with code 1 (Error): fetch failed: connection reset") {
+		t.Fatalf("message %q does not say what the container said as it exited", got.Message)
+	}
+}
+
+func TestObserveAFirstCrashIsStillStarting(t *testing.T) {
+	pod := pending()
+	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
+		Name:         "fetch-assets",
+		RestartCount: 1,
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff", Message: "back-off 10s"},
+		},
+	}}
+	got := botctl.Observe(pod)
+	if got.Phase == v1alpha1.BotPhaseFailed {
+		t.Fatalf("one crash is a restart the kubelet is already making, not a failure: %q", got.Message)
 	}
 }
 

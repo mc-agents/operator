@@ -109,7 +109,9 @@ func (b *DefaultBuilder) container(bot *v1alpha1.MinecraftBot, image string) cor
 		Name:            ContainerName,
 		Image:           image,
 		ImagePullPolicy: bot.Spec.Image.PullPolicy,
-		Env:             containerEnv(bot),
+		// The tail of the log in the exit message, which the bot's status carries after the pod is gone.
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+		Env:                      containerEnv(bot),
 		Ports: []corev1.ContainerPort{
 			{Name: HealthPortName, ContainerPort: HealthPort, Protocol: corev1.ProtocolTCP},
 		},
@@ -144,9 +146,10 @@ func (b *DefaultBuilder) assetFetcher(bot *v1alpha1.MinecraftBot, assets *v1alph
 		image = fetcherFor(b.defaults.AssetFetcherImage, bot.Spec.MinecraftVersion)
 	}
 	return corev1.Container{
-		Name:            InitContainerName,
-		Image:           image,
-		ImagePullPolicy: bot.Spec.Image.PullPolicy,
+		Name:                     InitContainerName,
+		Image:                    image,
+		ImagePullPolicy:          bot.Spec.Image.PullPolicy,
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		Args: []string{
 			"--version", bot.Spec.MinecraftVersion,
 			"--dest", assetDir(bot, assets),
