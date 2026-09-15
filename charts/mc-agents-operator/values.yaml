@@ -27,7 +27,11 @@ rbac:
   create: true
 
 # Empty watches every namespace. Setting it narrows the informers, not the RBAC: the ClusterRole
-# stays cluster-wide so the same release can be widened later without a permission change.
+# stays cluster-wide so the same release can be widened later without a permission change. The
+# operator lives in its own namespace and tenants put MCPServers and bots in theirs, so a narrowed
+# list names the tenants', not this release's.
+watchNamespaces: []
+# Deprecated: a single namespace, added to watchNamespaces.
 watchNamespace: ""
 
 # Concurrent reconciles per controller. Bots are independent of each other, so this is a
@@ -40,11 +44,27 @@ resyncPeriod: 10m
 leaderElection:
   # Required when replicaCount > 1; the chart refuses to render otherwise.
   enabled: false
-  id: mc-agents-operator.mc-agents.dev
+  id: mc-agents-operator.mc-agents.junhyung.cloud
   # Empty uses the release namespace.
   namespace: ""
   leaseDuration: 15s
 
+# What an MCPServer runs when its spec names no image. The tag is the MCP server release this
+# operator release was verified against.
+mcpServer:
+  image: junhyung.cloud/library/mcp-server
+  tag: "0.55.0"
+
+# Renders ClusterMinecraftBotProfile "default", which every bot without a nearer profile takes its
+# image tags and pod settings from. Its spec is a MinecraftBotProfile spec, e.g.
+#   spec:
+#     fabric: {tag: 0.64.0}
+#     azalea: {tag: 0.16.0}
+defaultProfile:
+  create: false
+  spec: {}
+
+# The last defaults, under every profile.
 bots:
   # Where the bot images live. The operator builds
   #   <registry>/bot-fabric:<fabricTag>-mc<spec.minecraftVersion>

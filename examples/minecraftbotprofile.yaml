@@ -1,0 +1,17 @@
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: ClusterMinecraftBotProfile
+metadata:
+  name: default
+spec:
+  fabric:
+    tag: cluster-default
+  azalea:
+    tag: cluster-default
+---
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MinecraftBotProfile
+metadata:
+  name: default
+spec:
+  azalea:
+    tag: namespace-default

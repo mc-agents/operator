@@ -1,10 +1,9 @@
 apiVersion: mc-agents.junhyung.cloud/v1alpha1
 kind: MinecraftBot
 metadata:
-  name: scout
+  name: tagged
 spec:
-  kind: fabric
+  kind: azalea
   minecraftVersion: "26.1.2"
   server:
-    host: mc-mcp-server.mc-agents.svc
-    port: 8765
+    host: nowhere.invalid

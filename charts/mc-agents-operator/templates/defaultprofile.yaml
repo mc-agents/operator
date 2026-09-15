@@ -1,0 +1,12 @@
+{{- if .Values.defaultProfile.create }}
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: ClusterMinecraftBotProfile
+metadata:
+  name: default
+  labels:
+    {{- include "mc-agents-operator.labels" . | nindent 4 }}
+{{- with .Values.defaultProfile.spec }}
+spec:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}

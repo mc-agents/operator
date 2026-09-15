@@ -14,6 +14,7 @@ import (
 
 	"github.com/mc-agents/operator/api/v1alpha1"
 	"github.com/mc-agents/operator/internal/botimage"
+	"github.com/mc-agents/operator/internal/profile"
 )
 
 const (
@@ -33,7 +34,7 @@ const (
 )
 
 type Builder interface {
-	Build(bot *v1alpha1.MinecraftBot) (*corev1.Pod, error)
+	Build(bot *v1alpha1.MinecraftBot, p profile.Resolved) (*corev1.Pod, error)
 }
 
 type Defaults struct {
@@ -53,8 +54,9 @@ func NewBuilder(images botimage.Resolver, defaults Defaults) *DefaultBuilder {
 	return &DefaultBuilder{images: images, defaults: defaults}
 }
 
-func (b *DefaultBuilder) Build(bot *v1alpha1.MinecraftBot) (*corev1.Pod, error) {
-	image, err := b.images.Resolve(&bot.Spec)
+func (b *DefaultBuilder) Build(owner *v1alpha1.MinecraftBot, p profile.Resolved) (*corev1.Pod, error) {
+	bot := profile.Apply(owner, p.Spec)
+	image, err := b.images.Resolve(&bot.Spec, &p.Spec)
 	if err != nil {
 		return nil, fmt.Errorf("resolve image: %w", err)
 	}
@@ -95,7 +97,7 @@ func (b *DefaultBuilder) Build(bot *v1alpha1.MinecraftBot) (*corev1.Pod, error) 
 			Labels:      podLabels(bot),
 			Annotations: podAnnotations(bot),
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(bot, v1alpha1.SchemeGroupVersion.WithKind("MinecraftBot")),
+				*metav1.NewControllerRef(owner, v1alpha1.SchemeGroupVersion.WithKind("MinecraftBot")),
 			},
 		},
 		Spec: spec,

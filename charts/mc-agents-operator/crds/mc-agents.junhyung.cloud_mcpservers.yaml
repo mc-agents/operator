@@ -4,45 +4,36 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: minecraftbots.mc-agents.dev
+  name: mcpservers.mc-agents.junhyung.cloud
 spec:
-  group: mc-agents.dev
+  group: mc-agents.junhyung.cloud
   names:
     categories:
     - mc-agents
-    kind: MinecraftBot
-    listKind: MinecraftBotList
-    plural: minecraftbots
+    kind: MCPServer
+    listKind: MCPServerList
+    plural: mcpservers
     shortNames:
-    - mcbot
-    singular: minecraftbot
+    - mcps
+    singular: mcpserver
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.kind
-      name: Kind
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
       type: string
-    - jsonPath: .spec.minecraftVersion
-      name: MC
-      type: string
-    - jsonPath: .status.phase
-      name: Phase
-      type: string
-    - jsonPath: .status.link
-      name: Link
-      type: string
-    - jsonPath: .status.podName
-      name: Pod
+    - jsonPath: .status.endpoint
+      name: Endpoint
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    - jsonPath: .status.lastError
-      name: Error
-      priority: 1
-      type: string
     - jsonPath: .status.image
       name: Image
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Reason
       priority: 1
       type: string
     name: v1alpha1
@@ -980,247 +971,68 @@ spec:
                         x-kubernetes-list-type: atomic
                     type: object
                 type: object
-              assets:
+              auth:
                 properties:
-                  claimName:
+                  existingSecret:
+                    description: |-
+                      A Secret in this namespace that already holds the bearer token. Empty has the operator create
+                      <name>-mcp-server-auth once and never rewrite it.
                     type: string
-                  fetcherImage:
+                  secretKey:
+                    default: token
                     type: string
-                  mountPath:
-                    default: /mc-assets
-                    type: string
-                  prefilled:
-                    type: boolean
-                  readOnly:
-                    type: boolean
-                  resources:
-                    description: ResourceRequirements describes the compute resource
-                      requirements.
-                    properties:
-                      claims:
-                        description: |-
-                          Claims lists the names of resources, defined in spec.resourceClaims,
-                          that are used by this container.
-
-                          This field depends on the
-                          DynamicResourceAllocation feature gate.
-
-                          This field is immutable. It can only be set for containers.
-                        items:
-                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                          properties:
-                            name:
-                              description: |-
-                                Name must match the name of one entry in pod.spec.resourceClaims of
-                                the Pod where this field is used. It makes that resource available
-                                inside a container.
-                              type: string
-                            request:
-                              description: |-
-                                Request is the name chosen for a request in the referenced claim.
-                                If empty, everything from the claim is made available, otherwise
-                                only the result of this request.
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - name
-                        x-kubernetes-list-type: map
-                      limits:
-                        additionalProperties:
-                          anyOf:
-                          - type: integer
-                          - type: string
-                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                          x-kubernetes-int-or-string: true
-                        description: |-
-                          Limits describes the maximum amount of compute resources allowed.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                        type: object
-                      requests:
-                        additionalProperties:
-                          anyOf:
-                          - type: integer
-                          - type: string
-                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                          x-kubernetes-int-or-string: true
-                        description: |-
-                          Requests describes the minimum amount of compute resources required.
-                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                        type: object
-                    type: object
-                  sizeLimit:
-                    anyOf:
-                    - type: integer
-                    - type: string
-                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                    x-kubernetes-int-or-string: true
                 type: object
-              botName:
-                maxLength: 16
-                pattern: ^[A-Za-z0-9_]{1,16}$
-                type: string
-              env:
-                items:
-                  description: EnvVar represents an environment variable present in
-                    a Container.
-                  properties:
-                    name:
-                      description: |-
-                        Name of the environment variable.
-                        May consist of any printable ASCII characters except '='.
+              bots:
+                properties:
+                  profileRef:
+                    description: Written into every MinecraftBot this server creates.
+                    properties:
+                      kind:
+                        default: MinecraftBotProfile
+                        enum:
+                        - MinecraftBotProfile
+                        - ClusterMinecraftBotProfile
+                        type: string
+                      name:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  provision:
+                    default: true
+                    description: |-
+                      Whether join-server may create a MinecraftBot in this namespace when none is running under the
+                      name it was given. Off, it uses bots that dial in and nothing else, and the Role goes with it.
+                    type: boolean
+                type: object
+              feeds:
+                properties:
+                  muted:
+                    description: Feeds the bots never send.
+                    items:
+                      enum:
+                      - chat
+                      - actionBar
+                      - title
+                      - dialog
+                      - effect
+                      - toast
                       type: string
-                    value:
-                      description: |-
-                        Variable references $(VAR_NAME) are expanded
-                        using the previously defined environment variables in the container and
-                        any service environment variables. If a variable cannot be resolved,
-                        the reference in the input string will be unchanged. Double $$ are reduced
-                        to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e.
-                        "$$(VAR_NAME)" will produce the string literal "$(VAR_NAME)".
-                        Escaped references will never be expanded, regardless of whether the variable
-                        exists or not.
-                        Defaults to "".
-                      type: string
-                    valueFrom:
-                      description: Source for the environment variable's value. Cannot
-                        be used if value is not empty.
-                      properties:
-                        configMapKeyRef:
-                          description: Selects a key of a ConfigMap.
-                          properties:
-                            key:
-                              description: The key to select.
-                              type: string
-                            name:
-                              default: ""
-                              description: |-
-                                Name of the referent.
-                                This field is effectively required, but due to backwards compatibility is
-                                allowed to be empty. Instances of this type with an empty value here are
-                                almost certainly wrong.
-                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                              type: string
-                            optional:
-                              description: Specify whether the ConfigMap or its key
-                                must be defined
-                              type: boolean
-                          required:
-                          - key
-                          type: object
-                          x-kubernetes-map-type: atomic
-                        fieldRef:
-                          description: |-
-                            Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
-                            spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.
-                          properties:
-                            apiVersion:
-                              description: Version of the schema the FieldPath is
-                                written in terms of, defaults to "v1".
-                              type: string
-                            fieldPath:
-                              description: Path of the field to select in the specified
-                                API version.
-                              type: string
-                          required:
-                          - fieldPath
-                          type: object
-                          x-kubernetes-map-type: atomic
-                        fileKeyRef:
-                          description: |-
-                            FileKeyRef selects a key of the env file.
-                            Requires the EnvFiles feature gate to be enabled.
-                          properties:
-                            key:
-                              description: |-
-                                The key within the env file. An invalid key will prevent the pod from starting.
-                                The keys defined within a source may consist of any printable ASCII characters except '='.
-                                During Alpha stage of the EnvFiles feature gate, the key size is limited to 128 characters.
-                              type: string
-                            optional:
-                              default: false
-                              description: |-
-                                Specify whether the file or its key must be defined. If the file or key
-                                does not exist, then the env var is not published.
-                                If optional is set to true and the specified key does not exist,
-                                the environment variable will not be set in the Pod's containers.
-
-                                If optional is set to false and the specified key does not exist,
-                                an error will be returned during Pod creation.
-                              type: boolean
-                            path:
-                              description: |-
-                                The path within the volume from which to select the file.
-                                Must be relative and may not contain the '..' path or start with '..'.
-                              type: string
-                            volumeName:
-                              description: The name of the volume mount containing
-                                the env file.
-                              type: string
-                          required:
-                          - key
-                          - path
-                          - volumeName
-                          type: object
-                          x-kubernetes-map-type: atomic
-                        resourceFieldRef:
-                          description: |-
-                            Selects a resource of the container: only resources limits and requests
-                            (limits.cpu, limits.memory, limits.ephemeral-storage, requests.cpu, requests.memory and requests.ephemeral-storage) are currently supported.
-                          properties:
-                            containerName:
-                              description: 'Container name: required for volumes,
-                                optional for env vars'
-                              type: string
-                            divisor:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              description: Specifies the output format of the exposed
-                                resources, defaults to "1"
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            resource:
-                              description: 'Required: resource to select'
-                              type: string
-                          required:
-                          - resource
-                          type: object
-                          x-kubernetes-map-type: atomic
-                        secretKeyRef:
-                          description: Selects a key of a secret in the pod's namespace
-                          properties:
-                            key:
-                              description: The key of the secret to select from.  Must
-                                be a valid secret key.
-                              type: string
-                            name:
-                              default: ""
-                              description: |-
-                                Name of the referent.
-                                This field is effectively required, but due to backwards compatibility is
-                                allowed to be empty. Instances of this type with an empty value here are
-                                almost certainly wrong.
-                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                              type: string
-                            optional:
-                              description: Specify whether the Secret or its key must
-                                be defined
-                              type: boolean
-                          required:
-                          - key
-                          type: object
-                          x-kubernetes-map-type: atomic
-                      type: object
-                  required:
-                  - name
-                  type: object
-                type: array
+                    type: array
+                    x-kubernetes-list-type: set
+                  repeatFlushMs:
+                    default: 1000
+                    description: |-
+                      How often a repeated action bar, title or dialog line is resent. It is closed after three
+                      intervals without a repeat.
+                    format: int32
+                    minimum: 50
+                    type: integer
+                type: object
               image:
+                description: Repository is the full image name. An empty tag is the
+                  operator's --mcp-server-tag.
                 properties:
                   pullPolicy:
                     description: PullPolicy describes a policy for if/when to pull
@@ -1253,19 +1065,21 @@ spec:
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
-              kind:
-                default: fabric
-                description: |-
-                  fabric is a real Minecraft client: it renders, takes screenshots and draws a resource pack, and
-                  costs about 2GiB. azalea speaks the protocol without a client, at a few MiB, for the many bots a
-                  scenario can need at once and for the tools that do not need to see anything.
+              logLevel:
+                default: INFO
                 enum:
-                - fabric
-                - azalea
+                - TRACE
+                - DEBUG
+                - INFO
+                - WARN
+                - ERROR
                 type: string
-              minecraftVersion:
-                pattern: ^[0-9]+\.[0-9]+(\.[0-9]+)?$
-                type: string
+              maxBots:
+                default: 16
+                description: How many bots may be linked at once.
+                format: int32
+                minimum: 1
+                type: integer
               nodeSelector:
                 additionalProperties:
                   type: string
@@ -1277,28 +1091,6 @@ spec:
               podLabels:
                 additionalProperties:
                   type: string
-                type: object
-              render:
-                properties:
-                  enabled:
-                    default: true
-                    type: boolean
-                  frameRateLimit:
-                    default: 1
-                    format: int32
-                    maximum: 60
-                    minimum: 1
-                    type: integer
-                  height:
-                    default: 480
-                    format: int32
-                    minimum: 240
-                    type: integer
-                  width:
-                    default: 854
-                    format: int32
-                    minimum: 320
-                    type: integer
                 type: object
               resources:
                 description: ResourceRequirements describes the compute resource requirements.
@@ -1359,26 +1151,22 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
-              server:
+              service:
                 properties:
-                  host:
-                    minLength: 1
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  type:
+                    default: ClusterIP
+                    description: Service Type string describes ingress methods for
+                      a service
+                    enum:
+                    - ClusterIP
+                    - NodePort
+                    - LoadBalancer
                     type: string
-                  port:
-                    default: 8765
-                    format: int32
-                    maximum: 65535
-                    minimum: 1
-                    type: integer
-                required:
-                - host
                 type: object
-              serviceAccountName:
-                type: string
-              terminationGracePeriodSeconds:
-                format: int64
-                minimum: 0
-                type: integer
               tolerations:
                 items:
                   description: |-
@@ -1418,15 +1206,7 @@ spec:
                       type: string
                   type: object
                 type: array
-            required:
-            - minecraftVersion
-            - server
             type: object
-            x-kubernetes-validations:
-            - message: render is fabric-only
-              rule: self.kind == 'fabric' || !has(self.render)
-            - message: assets is fabric-only
-              rule: self.kind == 'fabric' || !has(self.assets)
           status:
             properties:
               conditions:
@@ -1488,33 +1268,24 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              endpoint:
+                description: Where an agent calls, from inside the cluster.
+                type: string
               image:
-                type: string
-              lastError:
-                type: string
-              lastSpawnTime:
-                format: date-time
-                type: string
-              link:
-                enum:
-                - Unknown
-                - Waiting
-                - Linked
-                - Lost
                 type: string
               observedGeneration:
                 format: int64
                 type: integer
-              phase:
-                enum:
-                - Pending
-                - Starting
-                - Running
-                - Failed
-                - Terminating
-                type: string
-              podName:
-                type: string
+              tokenSecretRef:
+                properties:
+                  key:
+                    type: string
+                  name:
+                    type: string
+                required:
+                - key
+                - name
+                type: object
             type: object
         type: object
     served: true

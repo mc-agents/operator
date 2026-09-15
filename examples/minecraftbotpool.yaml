@@ -1,4 +1,4 @@
-apiVersion: mc-agents.dev/v1alpha1
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
 kind: MinecraftBotPool
 metadata:
   name: scouts

@@ -5,11 +5,13 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
 	"github.com/mc-agents/operator/internal/botimage"
 	"github.com/mc-agents/operator/internal/podspec"
+	"github.com/mc-agents/operator/internal/profile"
 )
 
 func newBuilder() podspec.Builder {
@@ -31,7 +33,7 @@ func newBot(kind v1alpha1.BotKind) *v1alpha1.MinecraftBot {
 }
 
 func TestAzaleaPodHasNoAssetPlumbing(t *testing.T) {
-	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindAzalea))
+	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindAzalea), profile.Resolved{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestAzaleaPodHasNoAssetPlumbing(t *testing.T) {
 
 func TestFabricPodFetchesAssetsIntoAVersionedDirectory(t *testing.T) {
 	bot := newBot(v1alpha1.BotKindFabric)
-	pod, err := newBuilder().Build(bot)
+	pod, err := newBuilder().Build(bot, profile.Resolved{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -74,7 +76,7 @@ func TestPrefilledAssetsSkipTheFetcher(t *testing.T) {
 		Prefilled: true,
 		ReadOnly:  true,
 	}
-	pod, err := newBuilder().Build(bot)
+	pod, err := newBuilder().Build(bot, profile.Resolved{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -91,7 +93,7 @@ func TestPrefilledAssetsSkipTheFetcher(t *testing.T) {
 }
 
 func TestPodCarriesTheLinkContract(t *testing.T) {
-	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindFabric))
+	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindFabric), profile.Resolved{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -119,11 +121,11 @@ func TestPodCarriesTheLinkContract(t *testing.T) {
 func TestSpecHashTracksTheSpec(t *testing.T) {
 	builder := newBuilder()
 
-	base, err := builder.Build(newBot(v1alpha1.BotKindFabric))
+	base, err := builder.Build(newBot(v1alpha1.BotKindFabric), profile.Resolved{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	same, err := builder.Build(newBot(v1alpha1.BotKindFabric))
+	same, err := builder.Build(newBot(v1alpha1.BotKindFabric), profile.Resolved{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -133,7 +135,7 @@ func TestSpecHashTracksTheSpec(t *testing.T) {
 
 	changed := newBot(v1alpha1.BotKindFabric)
 	changed.Spec.Server.Host = "elsewhere.qa.svc"
-	moved, err := builder.Build(changed)
+	moved, err := builder.Build(changed, profile.Resolved{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -168,7 +170,7 @@ for anybody.
 */
 func TestNothingIsPinnedToAnArchitecture(t *testing.T) {
 	for _, kind := range []v1alpha1.BotKind{v1alpha1.BotKindFabric, v1alpha1.BotKindAzalea} {
-		pod, err := newBuilder().Build(newBot(kind))
+		pod, err := newBuilder().Build(newBot(kind), profile.Resolved{})
 		if err != nil {
 			t.Fatalf("Build(%s): %v", kind, err)
 		}
@@ -183,7 +185,7 @@ func TestAnExplicitNodeSelectorIsHonoured(t *testing.T) {
 	bot := newBot(v1alpha1.BotKindFabric)
 	bot.Spec.NodeSelector = map[string]string{"pool": "renderers"}
 
-	pod, err := newBuilder().Build(bot)
+	pod, err := newBuilder().Build(bot, profile.Resolved{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -198,7 +200,7 @@ reason: it bakes the Fabric loader that bot was built against. The chart's defau
 "latest" tag that has never existed in the registry.
 */
 func TestTheAssetFetcherIsPickedForTheMinecraftVersion(t *testing.T) {
-	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindFabric))
+	pod, err := newBuilder().Build(newBot(v1alpha1.BotKindFabric), profile.Resolved{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -219,12 +221,49 @@ func TestAnExplicitFetcherImageIsLeftAlone(t *testing.T) {
 		bot := newBot(v1alpha1.BotKindFabric)
 		bot.Spec.Assets = &v1alpha1.AssetCacheSpec{FetcherImage: image}
 
-		pod, err := newBuilder().Build(bot)
+		pod, err := newBuilder().Build(bot, profile.Resolved{})
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
 		if got := pod.Spec.InitContainers[0].Image; got != image {
 			t.Errorf("the fetcher image became %q, want %q", got, image)
 		}
+	}
+}
+
+func TestBuildFillsWhatTheBotLeavesEmptyFromTheProfile(t *testing.T) {
+	bot := newBot(v1alpha1.BotKindAzalea)
+	bot.Spec.PodLabels = map[string]string{"team": "qa"}
+	resolved := profile.Resolved{Spec: v1alpha1.BotProfileSpec{
+		Azalea: v1alpha1.AzaleaProfile{
+			Tag: "0.16.0",
+			Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			},
+		},
+		NodeSelector: map[string]string{"pool": "bots"},
+		PodLabels:    map[string]string{"team": "platform", "cost": "bots"},
+	}}
+
+	pod, err := newBuilder().Build(bot, resolved)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	c := pod.Spec.Containers[0]
+	if want := "junhyung.cloud/library/bot-azalea:0.16.0-mc26.1.2"; c.Image != want {
+		t.Fatalf("image got %q, want %q", c.Image, want)
+	}
+	if got := c.Resources.Limits.Memory().String(); got != "512Mi" {
+		t.Fatalf("memory limit got %s, want the profile's 512Mi", got)
+	}
+	if pod.Spec.NodeSelector["pool"] != "bots" {
+		t.Fatalf("node selector %v did not come from the profile", pod.Spec.NodeSelector)
+	}
+	if pod.Labels["team"] != "qa" || pod.Labels["cost"] != "bots" {
+		t.Fatalf("labels %v: the bot's own key should win and the profile's others should be added", pod.Labels)
+	}
+	if bot.Spec.NodeSelector != nil {
+		t.Fatal("Build wrote the profile into the bot it was given")
 	}
 }

@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: minecraftbotpools.mc-agents.dev
+  name: minecraftbotpools.mc-agents.junhyung.cloud
 spec:
-  group: mc-agents.dev
+  group: mc-agents.junhyung.cloud
   names:
     categories:
     - mc-agents
@@ -1307,6 +1307,23 @@ spec:
                       podLabels:
                         additionalProperties:
                           type: string
+                        type: object
+                      profileRef:
+                        description: |-
+                          Fills whatever this spec leaves empty. Without one the bot takes the namespace's
+                          MinecraftBotProfile "default", then the ClusterMinecraftBotProfile "default".
+                        properties:
+                          kind:
+                            default: MinecraftBotProfile
+                            enum:
+                            - MinecraftBotProfile
+                            - ClusterMinecraftBotProfile
+                            type: string
+                          name:
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
                         type: object
                       render:
                         properties:

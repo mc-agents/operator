@@ -19,12 +19,30 @@ metadata:
   labels:
     {{- include "mc-agents-operator.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["mc-agents.dev"]
+  - apiGroups: ["mc-agents.junhyung.cloud"]
     resources: ["minecraftbots", "minecraftbotpools"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["mc-agents.dev"]
-    resources: ["minecraftbots/status", "minecraftbotpools/status"]
+  - apiGroups: ["mc-agents.junhyung.cloud"]
+    resources: ["minecraftbots/status", "minecraftbotpools/status", "mcpservers/status"]
     verbs: ["get", "update", "patch"]
+  - apiGroups: ["mc-agents.junhyung.cloud"]
+    resources: ["mcpservers", "minecraftbotprofiles", "clusterminecraftbotprofiles"]
+    verbs: ["get", "list", "watch"]
+  # What an MCPServer runs. A Role can only grant what the operator itself holds, which the
+  # minecraftbots rule above already covers.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Only the token it generates. Secrets are read one at a time, never listed or cached.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create"]
   # Bot pods are created bare rather than through a Deployment: one bot is one pod, and a
   # restart has to keep the same identity.
   - apiGroups: [""]
@@ -51,4 +69,31 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "mc-agents-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+---
+# Namespace admins and editors get the mc-agents resources in the namespaces they already hold,
+# through the built-in admin, edit and view roles.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "mc-agents-operator.fullname" . }}-edit
+  labels:
+    {{- include "mc-agents-operator.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+rules:
+  - apiGroups: ["mc-agents.junhyung.cloud"]
+    resources: ["mcpservers", "minecraftbots", "minecraftbotpools", "minecraftbotprofiles", "minecraftbotpools/scale"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "mc-agents-operator.fullname" . }}-view
+  labels:
+    {{- include "mc-agents-operator.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+  - apiGroups: ["mc-agents.junhyung.cloud"]
+    resources: ["mcpservers", "minecraftbots", "minecraftbotpools", "minecraftbotprofiles"]
+    verbs: ["get", "list", "watch"]
 {{- end }}

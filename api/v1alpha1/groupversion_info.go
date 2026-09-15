@@ -7,7 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-const GroupName = "mc-agents.dev"
+const GroupName = "mc-agents.junhyung.cloud"
 
 const Version = "v1alpha1"
 
@@ -31,6 +31,9 @@ func addKnownTypes(s *runtime.Scheme) error {
 	s.AddKnownTypes(SchemeGroupVersion,
 		&MinecraftBot{}, &MinecraftBotList{},
 		&MinecraftBotPool{}, &MinecraftBotPoolList{},
+		&MinecraftBotProfile{}, &MinecraftBotProfileList{},
+		&ClusterMinecraftBotProfile{}, &ClusterMinecraftBotProfileList{},
+		&MCPServer{}, &MCPServerList{},
 	)
 	metav1.AddToGroupVersion(s, SchemeGroupVersion)
 	return nil

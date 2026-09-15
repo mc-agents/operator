@@ -1,0 +1,6 @@
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MCPServer
+metadata:
+  name: mc-agents
+spec:
+  maxBots: 8

@@ -15,7 +15,9 @@ K3D_IMAGE := mc-agents/operator:dev
 # to a concurrent deploy, so this refuses to touch it.
 K3D_CLUSTER ?= mc-agents
 K3D_CONTEXT := k3d-$(K3D_CLUSTER)
-NAMESPACE ?= mc-agents
+NAMESPACE ?= mc-agents-system
+# Where the verify run puts its MCPServer, profiles and bots: a tenant, never the operator's own.
+TENANT ?= mc-agents-verify
 
 .PHONY: all
 all: build
@@ -97,6 +99,8 @@ k3d-down: k3d-guard ## Delete the dedicated k3d cluster.
 .PHONY: k3d-deploy
 k3d-deploy: k3d-guard image ## Build, import and install the operator into the k3d cluster.
 	k3d image import $(K3D_IMAGE) -c $(K3D_CLUSTER)
+	# Helm installs crds/ only on the first install, so a changed CRD would never reach the cluster.
+	kubectl --context $(K3D_CONTEXT) apply --server-side --force-conflicts -f $(CHART)/crds
 	helm --kube-context $(K3D_CONTEXT) upgrade --install mc-agents-operator $(CHART) \
 		--namespace $(NAMESPACE) --create-namespace \
 		--set image.registry=mc-agents \
@@ -110,8 +114,10 @@ k3d-deploy: k3d-guard image ## Build, import and install the operator into the k
 	kubectl --context $(K3D_CONTEXT) -n $(NAMESPACE) rollout status deploy/mc-agents-operator
 
 .PHONY: k3d-verify
-k3d-verify: k3d-guard ## Apply the examples and assert the operator reconciles them.
-	bash hack/verify-k3d.sh $(K3D_CONTEXT) $(NAMESPACE)
+k3d-verify: k3d-guard ## Apply the examples in a tenant namespace and assert the operator reconciles them.
+	kubectl --context $(K3D_CONTEXT) get namespace $(TENANT) >/dev/null 2>&1 || \
+		kubectl --context $(K3D_CONTEXT) create namespace $(TENANT)
+	bash hack/verify-k3d.sh $(K3D_CONTEXT) $(TENANT)
 
 .PHONY: verify
 verify: k3d-up k3d-deploy k3d-verify ## Full loop: cluster, install, reconcile check.

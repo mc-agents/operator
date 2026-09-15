@@ -39,7 +39,7 @@ spec:
           image: {{ include "mc-agents-operator.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - --namespace={{ .Values.watchNamespace }}
+            - --watch-namespaces={{ include "mc-agents-operator.watchNamespaces" . }}
             - --workers={{ .Values.workers }}
             - --resync-period={{ .Values.resyncPeriod }}
             - --health-probe-bind-address=:{{ .Values.probes.port }}
@@ -52,6 +52,8 @@ spec:
             - --leader-elect-id={{ .Values.leaderElection.id }}
             - --leader-elect-namespace={{ .Values.leaderElection.namespace }}
             - --leader-elect-lease-duration={{ .Values.leaderElection.leaseDuration }}
+            - --mcp-server-image={{ .Values.mcpServer.image }}
+            - --mcp-server-tag={{ .Values.mcpServer.tag }}
             - --bot-registry={{ .Values.bots.registry }}
             - --fabric-tag={{ .Values.bots.fabricTag }}
             - --azalea-tag={{ .Values.bots.azaleaTag }}

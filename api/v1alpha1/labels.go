@@ -4,6 +4,8 @@ const (
 	LabelBot       = GroupName + "/bot"
 	LabelPool      = GroupName + "/pool"
 	LabelBotKind   = GroupName + "/kind"
+	LabelMCPServer = GroupName + "/mcpserver"
+	LabelInstance  = "app.kubernetes.io/instance"
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelName      = "app.kubernetes.io/name"
 

@@ -1,6 +1,7 @@
 package botimage
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 
@@ -10,7 +11,7 @@ import (
 const DefaultRegistry = "junhyung.cloud/library"
 
 type Resolver interface {
-	Resolve(spec *v1alpha1.MinecraftBotSpec) (string, error)
+	Resolve(spec *v1alpha1.MinecraftBotSpec, profile *v1alpha1.BotProfileSpec) (string, error)
 }
 
 type Tags struct {
@@ -30,16 +31,23 @@ func NewResolver(registry string, tags Tags) *DefaultResolver {
 	return &DefaultResolver{registry: strings.TrimSuffix(registry, "/"), tags: tags}
 }
 
-func (r *DefaultResolver) Resolve(spec *v1alpha1.MinecraftBotSpec) (string, error) {
+func (r *DefaultResolver) Resolve(spec *v1alpha1.MinecraftBotSpec, profile *v1alpha1.BotProfileSpec) (string, error) {
+	if profile == nil {
+		profile = &v1alpha1.BotProfileSpec{}
+	}
 	repository := spec.Image.Repository
 	if repository == "" {
-		repository = fmt.Sprintf("%s/bot-%s", r.registry, spec.Kind)
+		registry := r.registry
+		if profile.Registry != "" {
+			registry = strings.TrimSuffix(profile.Registry, "/")
+		}
+		repository = fmt.Sprintf("%s/bot-%s", registry, spec.Kind)
 	}
 	if ref, ok := pinned(repository); ok {
 		return ref, nil
 	}
 
-	tag, err := r.tag(spec)
+	tag, err := r.tag(spec, profile)
 	if err != nil {
 		return "", err
 	}
@@ -49,7 +57,7 @@ func (r *DefaultResolver) Resolve(spec *v1alpha1.MinecraftBotSpec) (string, erro
 	return repository + ":" + tag, nil
 }
 
-func (r *DefaultResolver) tag(spec *v1alpha1.MinecraftBotSpec) (string, error) {
+func (r *DefaultResolver) tag(spec *v1alpha1.MinecraftBotSpec, profile *v1alpha1.BotProfileSpec) (string, error) {
 	if spec.Image.Tag != "" {
 		return spec.Image.Tag, nil
 	}
@@ -57,9 +65,9 @@ func (r *DefaultResolver) tag(spec *v1alpha1.MinecraftBotSpec) (string, error) {
 	var tag string
 	switch spec.Kind {
 	case v1alpha1.BotKindFabric:
-		tag = r.tags.Fabric
+		tag = cmp.Or(profile.Fabric.Tag, r.tags.Fabric)
 	case v1alpha1.BotKindAzalea:
-		tag = r.tags.Azalea
+		tag = cmp.Or(profile.Azalea.Tag, r.tags.Azalea)
 	default:
 		return "", fmt.Errorf("unknown bot kind %q", spec.Kind)
 	}

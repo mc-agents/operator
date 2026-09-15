@@ -17,10 +17,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
 	"github.com/mc-agents/operator/internal/podspec"
+	"github.com/mc-agents/operator/internal/profile"
 	"github.com/mc-agents/operator/internal/throttle"
 )
 
@@ -62,13 +65,29 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Named("minecraftbot").
 		For(&v1alpha1.MinecraftBot{}).
 		Owns(&corev1.Pod{}).
+		Watches(&v1alpha1.MinecraftBotProfile{}, handler.EnqueueRequestsFromMapFunc(r.botsIn)).
+		Watches(&v1alpha1.ClusterMinecraftBotProfile{}, handler.EnqueueRequestsFromMapFunc(r.botsIn)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers}).
 		Complete(r)
 }
 
-func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+// botsIn enqueues every bot a changed profile could reach: the namespace's for a MinecraftBotProfile,
+// all of them for a ClusterMinecraftBotProfile. A profile changes rarely and a bot it does not reach
+// reconciles to nothing.
+func (r *Reconciler) botsIn(ctx context.Context, obj client.Object) []reconcile.Request {
+	var bots v1alpha1.MinecraftBotList
+	if err := r.client.List(ctx, &bots, client.InNamespace(obj.GetNamespace())); err != nil {
+		log.FromContext(ctx).Error(err, "list bots for profile", "profile", obj.GetName())
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(bots.Items))
+	for _, bot := range bots.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&bot)})
+	}
+	return requests
+}
 
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var cached v1alpha1.MinecraftBot
 	if err := r.client.Get(ctx, req.NamespacedName, &cached); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -87,21 +106,34 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		})
 	}
 
-	desired, err := r.builder.Build(bot)
+	resolved, err := profile.Lookup(ctx, r.client, bot)
 	if err != nil {
-		r.recorder.Eventf(bot, corev1.EventTypeWarning, reasonInvalid, "%v", err)
-		return ctrl.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
-			Phase:              v1alpha1.BotPhaseFailed,
-			Link:               v1alpha1.LinkStateUnknown,
-			LastError:          err.Error(),
-			ObservedGeneration: bot.Generation,
-		})
+		return ctrl.Result{}, r.reportInvalid(ctx, bot, err)
 	}
+	desired, err := r.builder.Build(bot, resolved)
+	if err != nil {
+		return ctrl.Result{}, r.reportInvalid(ctx, bot, err)
+	}
+	return r.converge(ctx, bot, desired, resolved.Sources)
+}
+
+func (r *Reconciler) reportInvalid(ctx context.Context, bot *v1alpha1.MinecraftBot, err error) error {
+	r.recorder.Eventf(bot, corev1.EventTypeWarning, reasonInvalid, "%v", err)
+	return r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
+		Phase:              v1alpha1.BotPhaseFailed,
+		Link:               v1alpha1.LinkStateUnknown,
+		LastError:          err.Error(),
+		ObservedGeneration: bot.Generation,
+	})
+}
+
+func (r *Reconciler) converge(ctx context.Context, bot *v1alpha1.MinecraftBot, desired *corev1.Pod, profiles []string) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 
 	var pod corev1.Pod
-	switch err := r.client.Get(ctx, req.NamespacedName, &pod); {
+	switch err := r.client.Get(ctx, client.ObjectKeyFromObject(bot), &pod); {
 	case apierrors.IsNotFound(err):
-		return r.spawn(ctx, bot, desired)
+		return r.spawn(ctx, bot, desired, profiles)
 	case err != nil:
 		return ctrl.Result{}, fmt.Errorf("get pod: %w", err)
 	}
@@ -126,13 +158,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		Link:               observed.Link,
 		PodName:            pod.Name,
 		Image:              containerImage(&pod),
+		Profiles:           profiles,
 		LastError:          observed.Message,
 		LastSpawnTime:      bot.Status.LastSpawnTime,
 		ObservedGeneration: bot.Generation,
 	})
 }
 
-func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desired *corev1.Pod) (ctrl.Result, error) {
+func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desired *corev1.Pod, profiles []string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	if ok, wait := r.gate.Acquire(r.now()); !ok {
@@ -166,6 +199,7 @@ func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desi
 		Link:               v1alpha1.LinkStateUnknown,
 		PodName:            desired.Name,
 		Image:              containerImage(desired),
+		Profiles:           profiles,
 		LastSpawnTime:      &now,
 		ObservedGeneration: bot.Generation,
 	})

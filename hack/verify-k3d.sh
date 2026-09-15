@@ -27,7 +27,7 @@ equals() { [[ "$(field "$1" "$2" "$3")" == "$4" ]]; }
 
 contains() { [[ "$(field "$1" "$2" "$3")" == *"$4"* ]]; }
 
-count_is() { [[ "$(k get minecraftbots -l "mc-agents.dev/pool=$1" --no-headers 2>/dev/null | wc -l | tr -d ' ')" == "$2" ]]; }
+count_is() { [[ "$(k get minecraftbots -l "mc-agents.junhyung.cloud/pool=$1" --no-headers 2>/dev/null | wc -l | tr -d ' ')" == "$2" ]]; }
 
 echo "== applying examples"
 k apply -f "${ROOT}/examples/minecraftbot.yaml"
@@ -38,6 +38,8 @@ await "minecraftbot/scout names its pod" 60 equals minecraftbot scout .status.po
 await "pod/scout exists" 60 k get pod scout
 
 echo "== a missing bot image lands in status, not just in the pod"
+# A tag no release will ever publish. The default tag is a real image once one has been released.
+k patch minecraftbot scout --type merge -p '{"spec":{"image":{"tag":"verify-missing"}}}'
 await "minecraftbot/scout reports the pull failure" 180 \
 	contains minecraftbot scout .status.lastError ImagePull
 await "minecraftbot/scout is Failed" 60 equals minecraftbot scout .status.phase Failed
@@ -61,6 +63,46 @@ await "status.replicas is still reported at zero" 30 equals minecraftbotpool sco
 echo "== deleting the CR collects the pod"
 k delete minecraftbot scout --wait=true
 await "pod/scout is gone" 60 bash -c "! kubectl --context ${CONTEXT} -n ${NAMESPACE} get pod scout"
+
+echo "== a bot takes its tag from the namespace profile over the cluster profile"
+k apply -f "${ROOT}/examples/minecraftbotprofile.yaml"
+k apply -f "${ROOT}/examples/minecraftbot-azalea.yaml"
+await "minecraftbot/tagged runs the namespace profile's tag" 60 \
+	contains minecraftbot tagged .status.image bot-azalea:namespace-default-mc26.1.2
+await "minecraftbot/tagged names both profiles" 30 \
+	equals minecraftbot tagged '.status.profiles[*]' "MinecraftBotProfile/default ClusterMinecraftBotProfile/default"
+k delete minecraftbotprofile default --wait=true
+await "without it the cluster profile's tag replaces the pod" 90 \
+	contains pod tagged '.spec.containers[0].image' bot-azalea:cluster-default-mc26.1.2
+k delete minecraftbot tagged --wait=true
+kubectl --context "${CONTEXT}" delete clusterminecraftbotprofile default --wait=true
+
+echo "== an MCPServer runs in its own namespace"
+k apply -f "${ROOT}/examples/mcpserver.yaml"
+if [[ -n "${MCP_SERVER_TAG:-}" ]]; then
+	k patch mcpserver mc-agents --type merge -p "{\"spec\":{\"image\":{\"tag\":\"${MCP_SERVER_TAG}\"}}}"
+fi
+await "deployment/mc-agents-mcp-server exists" 60 k get deployment mc-agents-mcp-server
+await "service/mc-agents-mcp-server exists" 30 k get service mc-agents-mcp-server
+await "role/mc-agents-mcp-server exists" 30 k get role mc-agents-mcp-server
+await "the token secret exists" 30 k get secret mc-agents-mcp-server-auth
+token_uid="$(field secret mc-agents-mcp-server-auth .metadata.uid)"
+await "status names the endpoint" 30 \
+	equals mcpserver mc-agents .status.endpoint "http://mc-agents-mcp-server.${NAMESPACE}.svc:3000/mcp"
+await "mcpserver/mc-agents is Ready" 240 \
+	equals mcpserver mc-agents '.status.conditions[?(@.type=="Ready")].status' True
+k annotate mcpserver mc-agents verify/touched="$(date +%s)" --overwrite
+sleep 5
+if [[ "$(field secret mc-agents-mcp-server-auth .metadata.uid)" != "${token_uid}" ]]; then
+	echo "the token secret was replaced by a reconcile" >&2
+	exit 1
+fi
+echo "ok: the token survives a reconcile"
+
+echo "== deleting the MCPServer takes its objects"
+k delete mcpserver mc-agents --wait=true
+await "deployment/mc-agents-mcp-server is gone" 60 \
+	bash -c "! kubectl --context ${CONTEXT} -n ${NAMESPACE} get deployment mc-agents-mcp-server"
 
 echo "== cleaning up"
 k delete minecraftbotpool scouts --wait=true

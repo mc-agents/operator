@@ -47,6 +47,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s/%s:%s" .Values.image.registry .Values.image.repository $tag -}}
 {{- end -}}
 
+{{- define "mc-agents-operator.watchNamespaces" -}}
+{{- .Values.watchNamespaces | concat (list .Values.watchNamespace) | compact | uniq | join "," -}}
+{{- end -}}
+
 {{- define "mc-agents-operator.validate" -}}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection.enabled) -}}
 {{- fail "replicaCount > 1 without leaderElection.enabled: two reconcilers would race to create and delete the same bot pod" -}}

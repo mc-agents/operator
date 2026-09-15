@@ -135,6 +135,11 @@ type MinecraftBotSpec struct {
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_]{1,16}$`
 	BotName string `json:"botName,omitempty"`
 
+	// Fills whatever this spec leaves empty. Without one the bot takes the namespace's
+	// MinecraftBotProfile "default", then the ClusterMinecraftBotProfile "default".
+	// +optional
+	ProfileRef *ProfileRef `json:"profileRef,omitempty"`
+
 	// +optional
 	Render *RenderSpec `json:"render,omitempty"`
 
@@ -188,6 +193,10 @@ type MinecraftBotStatus struct {
 
 	// +optional
 	Image string `json:"image,omitempty"`
+
+	// The profiles the pod was built from, nearest first.
+	// +optional
+	Profiles []string `json:"profiles,omitempty"`
 
 	// +optional
 	LastError string `json:"lastError,omitempty"`

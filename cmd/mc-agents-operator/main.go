@@ -1,4 +1,4 @@
-// Command mc-agents-operator runs the MinecraftBot and MinecraftBotPool
+// Command mc-agents-operator runs the MinecraftBot, MinecraftBotPool and MCPServer
 // reconcilers against an in-cluster (or kubeconfig-supplied) Kubernetes API.
 package main
 
@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -25,7 +27,9 @@ import (
 	"github.com/mc-agents/operator/api/v1alpha1"
 	"github.com/mc-agents/operator/internal/botimage"
 	botctl "github.com/mc-agents/operator/internal/controller/bot"
+	mcpserverctl "github.com/mc-agents/operator/internal/controller/mcpserver"
 	poolctl "github.com/mc-agents/operator/internal/controller/pool"
+	"github.com/mc-agents/operator/internal/mcpserverspec"
 	"github.com/mc-agents/operator/internal/podspec"
 	"github.com/mc-agents/operator/internal/throttle"
 )
@@ -103,10 +107,17 @@ func run(ctx context.Context, opts options) error {
 	if err := poolctl.NewReconciler(c, recorder).SetupWithManager(mgr, opts.workers); err != nil {
 		return fmt.Errorf("minecraftbotpool reconciler: %w", err)
 	}
+	servers := mcpserverctl.NewReconciler(c, mgr.GetAPIReader(), recorder, mcpserverspec.Defaults{
+		Repository: opts.mcpServerImage,
+		Tag:        opts.mcpServerTag,
+	})
+	if err := servers.SetupWithManager(mgr, opts.workers); err != nil {
+		return fmt.Errorf("mcpserver reconciler: %w", err)
+	}
 
 	klog.InfoS("mc-agents-operator starting",
 		"version", version,
-		"namespace", namespaceLabel(opts.namespace),
+		"namespaces", namespaceLabel(opts.watchNamespaces),
 		"spawnInterval", opts.spawnInterval,
 	)
 	return mgr.Start(ctx)
@@ -117,6 +128,12 @@ func managerOptions(opts options) manager.Options {
 	// it or the manager refuses to start.
 	renewDeadline := opts.leaderElectLeaseDuration * 2 / 3
 	retryPeriod := opts.leaderElectLeaseDuration / 5
+
+	// Everything the operator creates carries the managed-by label, so the cache never holds a pod,
+	// Deployment or Role it did not create.
+	managed := cache.ByObject{Label: labels.SelectorFromSet(labels.Set{
+		v1alpha1.LabelManagedBy: v1alpha1.ManagedByValue,
+	})}
 
 	out := manager.Options{
 		Scheme:                        scheme,
@@ -131,26 +148,28 @@ func managerOptions(opts options) manager.Options {
 		RetryPeriod:                   &retryPeriod,
 		Cache: cache.Options{
 			SyncPeriod: &opts.resyncPeriod,
-			// Bot pods carry the managed-by label, so the cache never holds a
-			// pod this operator did not create.
 			ByObject: map[client.Object]cache.ByObject{
-				&corev1.Pod{}: {
-					Label: labels.SelectorFromSet(labels.Set{
-						v1alpha1.LabelManagedBy: v1alpha1.ManagedByValue,
-					}),
-				},
+				&corev1.Pod{}:            managed,
+				&appsv1.Deployment{}:     managed,
+				&corev1.Service{}:        managed,
+				&corev1.ServiceAccount{}: managed,
+				&rbacv1.Role{}:           managed,
+				&rbacv1.RoleBinding{}:    managed,
 			},
 		},
 	}
-	if opts.namespace != "" {
-		out.Cache.DefaultNamespaces = map[string]cache.Config{opts.namespace: {}}
+	if len(opts.watchNamespaces) > 0 {
+		out.Cache.DefaultNamespaces = map[string]cache.Config{}
+		for _, ns := range opts.watchNamespaces {
+			out.Cache.DefaultNamespaces[ns] = cache.Config{}
+		}
 	}
 	return out
 }
 
-func namespaceLabel(ns string) string {
-	if ns == "" {
+func namespaceLabel(ns namespaces) string {
+	if len(ns) == 0 {
 		return "all"
 	}
-	return ns
+	return ns.String()
 }
