@@ -35,6 +35,11 @@ const (
 	reasonAdopted    = "AdoptionRefused"
 )
 
+const (
+	predecessorMessage = "waiting for the previous pod to terminate"
+	predecessorRequeue = 2 * time.Second
+)
+
 type Reconciler struct {
 	client   client.Client
 	recorder record.EventRecorder
@@ -138,7 +143,10 @@ func (r *Reconciler) converge(ctx context.Context, bot *v1alpha1.MinecraftBot, d
 		return ctrl.Result{}, fmt.Errorf("get pod: %w", err)
 	}
 
-	if owner := metav1.GetControllerOf(&pod); owner == nil || owner.UID != bot.UID {
+	switch owner := metav1.GetControllerOf(&pod); {
+	case isPredecessor(owner, bot):
+		return r.awaitPredecessor(ctx, bot, &pod)
+	case owner == nil || owner.UID != bot.UID:
 		return ctrl.Result{}, r.reportClash(ctx, bot, pod.Name)
 	}
 
@@ -185,7 +193,7 @@ func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desi
 
 	err := r.client.Create(ctx, desired)
 	if apierrors.IsAlreadyExists(err) {
-		return ctrl.Result{}, r.confirmClash(ctx, bot, desired.Name)
+		return r.confirmClash(ctx, bot, desired.Name)
 	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("create pod: %w", err)
@@ -206,16 +214,52 @@ func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desi
 }
 
 // confirmClash re-reads the pod straight from the API server. A create that
-// raced our own cache is not a clash; anything else is.
-func (r *Reconciler) confirmClash(ctx context.Context, bot *v1alpha1.MinecraftBot, name string) error {
+// raced our own cache is not a clash, nor is the pod of the bot this one
+// replaces; anything else is.
+func (r *Reconciler) confirmClash(ctx context.Context, bot *v1alpha1.MinecraftBot, name string) (ctrl.Result, error) {
 	var live corev1.Pod
 	key := client.ObjectKey{Namespace: bot.Namespace, Name: name}
 	if err := r.apiReader.Get(ctx, key, &live); err == nil {
-		if owner := metav1.GetControllerOf(&live); owner != nil && owner.UID == bot.UID {
-			return nil
+		switch owner := metav1.GetControllerOf(&live); {
+		case owner != nil && owner.UID == bot.UID:
+			return ctrl.Result{}, nil
+		case isPredecessor(owner, bot):
+			return r.awaitPredecessor(ctx, bot, &live)
 		}
 	}
-	return r.reportClash(ctx, bot, name)
+	return ctrl.Result{}, r.reportClash(ctx, bot, name)
+}
+
+// isPredecessor tells the pod of an earlier MinecraftBot of this name from a
+// foreign one. Two bots cannot share a name, so an owner with this name and
+// another UID has been deleted; its pod is on its way out, or will be once the
+// garbage collector reaches it.
+func isPredecessor(owner *metav1.OwnerReference, bot *v1alpha1.MinecraftBot) bool {
+	return owner != nil && owner.Kind == "MinecraftBot" && owner.Name == bot.Name && owner.UID != bot.UID
+}
+
+// awaitPredecessor holds the bot in Pending until the previous bot's pod is
+// gone, deleting it when the garbage collector has not yet. leave-server then
+// join-server under one name lands here for the seconds the old process takes
+// to exit; the MCP server keeps polling on Pending, where Failed made it give
+// the bot back.
+func (r *Reconciler) awaitPredecessor(ctx context.Context, bot *v1alpha1.MinecraftBot, pod *corev1.Pod) (ctrl.Result, error) {
+	if pod.DeletionTimestamp.IsZero() {
+		log.FromContext(ctx).Info("deleting the previous bot's pod", "pod", pod.Name)
+		if err := r.deletePod(ctx, pod); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	if err := r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
+		Phase:              v1alpha1.BotPhasePending,
+		Link:               v1alpha1.LinkStateUnknown,
+		LastError:          predecessorMessage,
+		LastSpawnTime:      bot.Status.LastSpawnTime,
+		ObservedGeneration: bot.Generation,
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: predecessorRequeue}, nil
 }
 
 func (r *Reconciler) reportClash(ctx context.Context, bot *v1alpha1.MinecraftBot, name string) error {

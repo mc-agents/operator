@@ -27,6 +27,24 @@ equals() { [[ "$(field "$1" "$2" "$3")" == "$4" ]]; }
 
 contains() { [[ "$(field "$1" "$2" "$3")" == *"$4"* ]]; }
 
+# await Running, and fail at once should Failed show up on the way there.
+await_running() {
+	local name="$1" timeout="$2"
+	local deadline=$((SECONDS + timeout))
+	until equals minecraftbot "${name}" .status.phase Running; do
+		if equals minecraftbot "${name}" .status.phase Failed; then
+			echo "minecraftbot/${name} is Failed: $(field minecraftbot "${name}" .status.lastError)" >&2
+			return 1
+		fi
+		if ((SECONDS >= deadline)); then
+			echo "timed out after ${timeout}s waiting for minecraftbot/${name} to be Running" >&2
+			return 1
+		fi
+		sleep 1
+	done
+	echo "ok: minecraftbot/${name} is Running and was never Failed"
+}
+
 count_is() { [[ "$(k get minecraftbots -l "mc-agents.junhyung.cloud/pool=$1" --no-headers 2>/dev/null | wc -l | tr -d ' ')" == "$2" ]]; }
 
 echo "== applying examples"
@@ -76,6 +94,33 @@ await "without it the cluster profile's tag replaces the pod" 90 \
 	contains pod tagged '.spec.containers[0].image' bot-azalea:cluster-default-mc26.1.2
 k delete minecraftbot tagged --wait=true
 kubectl --context "${CONTEXT}" delete clusterminecraftbotprofile default --wait=true
+
+echo "== a bot asked for again by name waits for its old pod instead of calling it a clash"
+await "pod/tagged is gone" 60 bash -c "! kubectl --context ${CONTEXT} -n ${NAMESPACE} get pod tagged"
+# No profile is left, so the bot runs the operator's default azalea image, which needs no MCP
+# server to stay up.
+k apply -f "${ROOT}/examples/minecraftbot-azalea.yaml"
+await_running tagged 180
+# leave-server then join-server: the CR goes and comes back while the old pod is still
+# terminating. A finalizer holds the pod there, since azalea exits on SIGTERM within a second and
+# the window would otherwise close before anything looked at it.
+release_hold() { k patch pod tagged --type json -p '[{"op":"remove","path":"/metadata/finalizers"}]'; }
+# Under errexit a failed assertion would otherwise leave pod/tagged Terminating in the tenant
+# namespace, and the cluster is reused: every later run would then meet it as a predecessor.
+trap 'release_hold >/dev/null 2>&1 || true' EXIT
+k patch pod tagged --type merge -p '{"metadata":{"finalizers":["mc-agents.junhyung.cloud/verify-hold"]}}'
+k delete minecraftbot tagged --wait=false
+k apply -f "${ROOT}/examples/minecraftbot-azalea.yaml"
+await "minecraftbot/tagged waits for the old pod" 30 \
+	contains minecraftbot tagged .status.lastError "waiting for the previous pod to terminate"
+equals minecraftbot tagged .status.phase Pending || {
+	echo "minecraftbot/tagged is $(field minecraftbot tagged .status.phase) while the old pod terminates, want Pending" >&2
+	exit 1
+}
+release_hold
+trap - EXIT
+await_running tagged 180
+k delete minecraftbot tagged --wait=true
 
 echo "== an MCPServer runs in its own namespace"
 k apply -f "${ROOT}/examples/mcpserver.yaml"
