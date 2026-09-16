@@ -33,6 +33,7 @@ const (
 	reasonScaledUp   = "ScaledUp"
 	reasonScaledDown = "ScaledDown"
 	reasonUpdated    = "TemplateUpdated"
+	reasonNameClash  = "NameClash"
 )
 
 type Reconciler struct {
@@ -100,13 +101,31 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.recorder.Eventf(pool, corev1.EventTypeNormal, reasonScaledDown, "deleted bot %s", bot.Name)
 	}
 
+	var clash string
+	var requeue time.Duration
 	for ordinal := range desired {
 		existing, ok := byOrdinal[ordinal]
 		if !ok {
 			bot := newBot(pool, ordinal, templateHash)
 			err := r.client.Create(ctx, bot)
 			if apierrors.IsAlreadyExists(err) {
-				return ctrl.Result{RequeueAfter: time.Second}, nil
+				if taken, err := r.foreign(ctx, bot); err != nil {
+					return ctrl.Result{}, err
+				} else if !taken {
+					requeue = time.Second
+					continue
+				}
+				message := fmt.Sprintf("bot %s already exists and is not owned by this pool", bot.Name)
+				logger.Info("skipping an ordinal whose name is taken", "bot", bot.Name)
+				// Once, on finding it: the clash stays until someone removes that bot, and every
+				// resync would otherwise record it again.
+				if pool.Status.LastError != message {
+					r.recorder.Event(pool, corev1.EventTypeWarning, reasonNameClash, message)
+				}
+				if clash == "" {
+					clash = message
+				}
+				continue
 			}
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("create bot %s: %w", bot.Name, err)
@@ -130,7 +149,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.recorder.Eventf(pool, corev1.EventTypeNormal, reasonUpdated, "updated bot %s", updated.Name)
 	}
 
-	return ctrl.Result{}, r.writeStatus(ctx, pool, desired)
+	if err := r.writeStatus(ctx, pool, desired, clash); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// foreign tells whether the bot an AlreadyExists points at is somebody else's. Not in the cache
+// yet is our own create racing the informer, and a bot owned by an earlier pool of this name is
+// on its way out under the garbage collector: both are a short wait. Anything else stays where it
+// is, and the pool says so rather than requeueing forever with nothing in status.
+func (r *Reconciler) foreign(ctx context.Context, bot *v1alpha1.MinecraftBot) (bool, error) {
+	var live v1alpha1.MinecraftBot
+	if err := r.client.Get(ctx, client.ObjectKeyFromObject(bot), &live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get bot %s: %w", bot.Name, err)
+	}
+	owner := metav1.GetControllerOf(&live)
+	ours := metav1.GetControllerOf(bot)
+	if owner != nil && owner.Kind == ours.Kind && owner.Name == ours.Name {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (r *Reconciler) ownedBots(ctx context.Context, pool *v1alpha1.MinecraftBotPool) ([]*v1alpha1.MinecraftBot, error) {
@@ -183,7 +225,9 @@ func applyTemplateMetadata(bot *v1alpha1.MinecraftBot, pool *v1alpha1.MinecraftB
 	bot.Annotations[v1alpha1.AnnotationSpecHash] = templateHash
 }
 
-func (r *Reconciler) writeStatus(ctx context.Context, pool *v1alpha1.MinecraftBotPool, desired int) error {
+// writeStatus rolls the bots up. lastError, when set, is the pool's own complaint and comes
+// before any bot's.
+func (r *Reconciler) writeStatus(ctx context.Context, pool *v1alpha1.MinecraftBotPool, desired int, lastError string) error {
 	owned, err := r.ownedBots(ctx, pool)
 	if err != nil {
 		return err
@@ -192,6 +236,7 @@ func (r *Reconciler) writeStatus(ctx context.Context, pool *v1alpha1.MinecraftBo
 	status := v1alpha1.MinecraftBotPoolStatus{
 		Replicas:           int32(len(owned)),
 		Selector:           labels.SelectorFromSet(labels.Set{v1alpha1.LabelPool: pool.Name}).String(),
+		LastError:          lastError,
 		ObservedGeneration: pool.Generation,
 		Conditions:         append([]metav1.Condition(nil), pool.Status.Conditions...),
 	}
@@ -237,7 +282,7 @@ func (r *Reconciler) writeStatus(ctx context.Context, pool *v1alpha1.MinecraftBo
 		latest.Status = status
 		return r.client.Status().Update(ctx, &latest)
 	})
-	if err != nil {
+	if err := client.IgnoreNotFound(err); err != nil {
 		return fmt.Errorf("update minecraftbotpool status: %w", err)
 	}
 	return nil

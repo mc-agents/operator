@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -25,6 +26,7 @@ import (
 	"github.com/mc-agents/operator/internal/botimage"
 	botctl "github.com/mc-agents/operator/internal/controller/bot"
 	"github.com/mc-agents/operator/internal/podspec"
+	"github.com/mc-agents/operator/internal/profile"
 	"github.com/mc-agents/operator/internal/throttle"
 )
 
@@ -46,16 +48,26 @@ func init() {
 }
 
 type harness struct {
-	client client.Client
-	under  *botctl.Reconciler
+	client   client.Client
+	under    *botctl.Reconciler
+	recorder *record.FakeRecorder
 }
 
 func newHarness(t *testing.T, c client.Client, apiReader client.Reader) *harness {
 	t.Helper()
+	return newThrottledHarness(t, c, apiReader, throttle.NewIntervalGate(0))
+}
+
+func newThrottledHarness(t *testing.T, c client.Client, apiReader client.Reader, gate throttle.Gate) *harness {
+	t.Helper()
+	recorder := record.NewFakeRecorder(32)
+	under := botctl.NewReconciler(c, apiReader, recorder, newBuilder(), gate)
+	return &harness{client: c, under: under, recorder: recorder}
+}
+
+func newBuilder() podspec.Builder {
 	images := botimage.NewResolver("", botimage.Tags{Fabric: "0.2.0", Azalea: "0.2.0"})
-	builder := podspec.NewBuilder(images, podspec.Defaults{})
-	under := botctl.NewReconciler(c, apiReader, record.NewFakeRecorder(32), builder, throttle.NewIntervalGate(0))
-	return &harness{client: c, under: under}
+	return podspec.NewBuilder(images, podspec.Defaults{})
 }
 
 func newBot() *v1alpha1.MinecraftBot {
@@ -74,6 +86,18 @@ func podOwnedBy(owner *metav1.OwnerReference) *corev1.Pod {
 	if owner != nil {
 		pod.OwnerReferences = []metav1.OwnerReference{*owner}
 	}
+	return pod
+}
+
+// ownPod is the pod the reconciler would build for newBot, spec hash included, so a test can
+// start from a pod that matches and then move one thing.
+func ownPod(t *testing.T) *corev1.Pod {
+	t.Helper()
+	pod, err := newBuilder().Build(newBot(), profile.Resolved{})
+	if err != nil {
+		t.Fatalf("build pod: %v", err)
+	}
+	pod.UID = stalePodUID
 	return pod
 }
 
@@ -259,5 +283,269 @@ func TestAForeignPodIsStillAClash(t *testing.T) {
 				t.Error("a foreign pod was deleted")
 			}
 		})
+	}
+}
+
+// events drains what the reconciler recorded so far, as "<type> <reason> <message>" lines.
+func (h *harness) events() []string {
+	var out []string
+	for {
+		select {
+		case e := <-h.recorder.Events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
+}
+
+func hasEvent(events []string, prefix string) bool {
+	for _, e := range events {
+		if strings.HasPrefix(e, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func withDeleteCapture(deleted *[]client.DeleteOption) interceptor.Funcs {
+	return interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			*deleted = opts
+			return c.Delete(ctx, obj, opts...)
+		},
+	}
+}
+
+func expectPinnedDelete(t *testing.T, deleted []client.DeleteOption) {
+	t.Helper()
+	var options client.DeleteOptions
+	options.ApplyOptions(deleted)
+	if options.Preconditions == nil || options.Preconditions.UID == nil || *options.Preconditions.UID != stalePodUID {
+		t.Fatalf("the delete is not pinned to the pod's UID: %+v", options.Preconditions)
+	}
+}
+
+func TestAPodThatNoLongerMatchesTheSpecIsReplaced(t *testing.T) {
+	stale := ownPod(t)
+	stale.Annotations[v1alpha1.AnnotationSpecHash] = "before-the-edit"
+	var deleted []client.DeleteOption
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.MinecraftBot{}).
+		WithObjects(newBot(), stale).
+		WithInterceptorFuncs(withDeleteCapture(&deleted)).
+		Build()
+	h := newHarness(t, c, c)
+
+	if result := h.reconcile(t); result.RequeueAfter != time.Second {
+		t.Errorf("requeue after %s, want 1s for the replacement", result.RequeueAfter)
+	}
+	if _, ok := h.pod(t); ok {
+		t.Fatal("the pod that no longer matches the spec is still there")
+	}
+	expectPinnedDelete(t, deleted)
+	events := h.events()
+	if !hasEvent(events, "Normal Recreating") {
+		t.Errorf("no Recreating event in %q", events)
+	}
+	if hasEvent(events, "Warning PodExited") {
+		t.Errorf("a spec change was blamed on the pod exiting: %q", events)
+	}
+}
+
+func TestAPodThatExitedIsReplacedAndTheExitIsRecorded(t *testing.T) {
+	exited := ownPod(t)
+	exited.Status = corev1.PodStatus{
+		Phase: corev1.PodFailed,
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Name:  podspec.ContainerName,
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}},
+		}},
+	}
+	var deleted []client.DeleteOption
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.MinecraftBot{}).
+		WithObjects(newBot(), exited).
+		WithInterceptorFuncs(withDeleteCapture(&deleted)).
+		Build()
+	h := newHarness(t, c, c)
+
+	if result := h.reconcile(t); result.RequeueAfter != time.Second {
+		t.Errorf("requeue after %s, want 1s for the replacement", result.RequeueAfter)
+	}
+	if _, ok := h.pod(t); ok {
+		t.Fatal("the exited pod is still there")
+	}
+	expectPinnedDelete(t, deleted)
+	events := h.events()
+	if !hasEvent(events, "Warning PodExited pod scout: bot exited with code 137 (OOMKilled)") {
+		t.Errorf("the exit is not in the events as the pod reported it: %q", events)
+	}
+	if hasEvent(events, "Normal Recreating") {
+		t.Errorf("an exit was blamed on the spec: %q", events)
+	}
+}
+
+func TestAMatchingPodIsMirroredIntoStatus(t *testing.T) {
+	pod := ownPod(t)
+	pod.Status = running(true, 0).Status
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.MinecraftBot{}).
+		WithObjects(newBot(), pod).
+		Build()
+	h := newHarness(t, c, c)
+
+	if result := h.reconcile(t); result.RequeueAfter != 0 {
+		t.Errorf("a pod that matches requeues after %s", result.RequeueAfter)
+	}
+	if live, ok := h.pod(t); !ok || live.UID != stalePodUID {
+		t.Fatal("a pod that matches the spec was replaced")
+	}
+	bot := h.bot(t)
+	if bot.Status.Phase != v1alpha1.BotPhaseRunning || bot.Status.Link != v1alpha1.LinkStateLinked {
+		t.Errorf("status is %s/%s, want Running/Linked", bot.Status.Phase, bot.Status.Link)
+	}
+	ready := meta.FindStatusCondition(bot.Status.Conditions, v1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue || ready.Reason != v1alpha1.ReasonLinked {
+		t.Errorf("Ready is %+v, want True/Linked", ready)
+	}
+	if !hasEvent(h.events(), "Normal Linked") {
+		t.Error("linking left no event")
+	}
+}
+
+func TestTheLinkTimelineIsRecorded(t *testing.T) {
+	pod := ownPod(t)
+	pod.Status = running(true, 0).Status
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.MinecraftBot{}).
+		WithObjects(newBot(), pod).
+		Build()
+	h := newHarness(t, c, c)
+	h.reconcile(t)
+	h.events()
+
+	lost, _ := h.pod(t)
+	lost.Status = running(false, 1).Status
+	if err := c.Status().Update(context.Background(), lost); err != nil {
+		t.Fatalf("update pod status: %v", err)
+	}
+	h.reconcile(t)
+	if events := h.events(); !hasEvent(events, "Warning LinkLost") {
+		t.Errorf("losing the link left no event: %q", events)
+	}
+	h.reconcile(t)
+	if events := h.events(); len(events) != 0 {
+		t.Errorf("a reconcile that changed nothing recorded %q", events)
+	}
+
+	blocked, _ := h.pod(t)
+	blocked.Status.ContainerStatuses[0].RestartCount = 3
+	blocked.Status.ContainerStatuses[0].State = corev1.ContainerState{
+		Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff", Message: "back-off 40s"},
+	}
+	if err := c.Status().Update(context.Background(), blocked); err != nil {
+		t.Fatalf("update pod status: %v", err)
+	}
+	h.reconcile(t)
+	if events := h.events(); !hasEvent(events, "Warning PodFailed pod scout: CrashLoopBackOff") {
+		t.Errorf("the pod turning Failed left no event: %q", events)
+	}
+	degraded := meta.FindStatusCondition(h.bot(t).Status.Conditions, v1alpha1.ConditionDegraded)
+	if degraded == nil || degraded.Status != metav1.ConditionTrue || degraded.Reason != "CrashLoopBackOff" {
+		t.Errorf("Degraded is %+v, want True with the kubelet's reason", degraded)
+	}
+}
+
+func TestDegradedNamesTheCauseWhenThereIsNoPod(t *testing.T) {
+	bot := newBot()
+	bot.Spec.ProfileRef = &v1alpha1.ProfileRef{Name: "missing"}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.MinecraftBot{}).
+		WithObjects(bot).
+		Build()
+	h := newHarness(t, c, c)
+	h.reconcile(t)
+
+	degraded := meta.FindStatusCondition(h.bot(t).Status.Conditions, v1alpha1.ConditionDegraded)
+	if degraded == nil || degraded.Status != metav1.ConditionTrue || degraded.Reason != v1alpha1.ReasonInvalidSpec {
+		t.Fatalf("Degraded is %+v, want True/InvalidSpec; there is no pod to have failed", degraded)
+	}
+}
+
+func TestThrottledIsRecordedOnceForTheWholeWait(t *testing.T) {
+	gate := throttle.NewIntervalGate(time.Hour)
+	gate.Acquire(time.Now())
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.MinecraftBot{}).
+		WithObjects(newBot()).
+		Build()
+	h := newThrottledHarness(t, c, c, gate)
+
+	if result := h.reconcile(t); result.RequeueAfter <= 0 {
+		t.Fatalf("a throttled bot must be requeued for the wait, got %s", result.RequeueAfter)
+	}
+	if events := h.events(); !hasEvent(events, "Normal Throttled waiting for the spawn interval") {
+		t.Fatalf("entering the wait left no event: %q", events)
+	}
+	if phase := h.bot(t).Status.Phase; phase != v1alpha1.BotPhasePending {
+		t.Fatalf("phase is %q, want Pending", phase)
+	}
+	h.reconcile(t)
+	h.reconcile(t)
+	if events := h.events(); len(events) != 0 {
+		t.Fatalf("every requeue in the same wait recorded again: %q", events)
+	}
+}
+
+func TestAStatusWriteRetriesAConflict(t *testing.T) {
+	conflicts := 1
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.MinecraftBot{}).
+		WithObjects(newBot()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if conflicts > 0 {
+					conflicts--
+					return apierrors.NewConflict(v1alpha1.Resource("minecraftbots"), obj.GetName(), nil)
+				}
+				return c.Status().Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	h := newHarness(t, c, c)
+	h.reconcile(t)
+
+	if phase := h.bot(t).Status.Phase; phase != v1alpha1.BotPhaseStarting {
+		t.Fatalf("phase is %q after a conflict was retried, want Starting", phase)
+	}
+}
+
+func TestABotDeletedUnderTheReconcileIsNotAnError(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.MinecraftBot{}).
+		WithObjects(newBot()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if err := c.Delete(ctx, obj); err != nil {
+					return err
+				}
+				return c.Status().Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	h := newHarness(t, c, c)
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: botName}}
+	if _, err := h.under.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("a bot deleted before its status write is a reconcile that has nothing left to do, got: %v", err)
 	}
 }

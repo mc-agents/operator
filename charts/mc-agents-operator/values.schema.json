@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "mc-agents-operator values",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    }
+  },
+  "properties": {
+    "replicaCount": {"type": "integer", "minimum": 0},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": {"type": "string", "minLength": 1},
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"]
+      }
+    },
+    "nameOverride": {"type": "string"},
+    "fullnameOverride": {"type": "string"},
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string"},
+        "annotations": {"$ref": "#/$defs/stringMap"}
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {"type": "boolean"}
+      }
+    },
+    "crds": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "install": {"type": "boolean"},
+        "keep": {"type": "boolean"}
+      }
+    },
+    "watchNamespaces": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "watchNamespace": {"type": "string"},
+    "workers": {"type": "integer", "minimum": 1},
+    "resyncPeriod": {"$ref": "#/$defs/duration"},
+    "leaderElection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "id": {"type": "string", "minLength": 1},
+        "namespace": {"type": "string"},
+        "leaseDuration": {"$ref": "#/$defs/duration"}
+      }
+    },
+    "mcpServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1}
+      }
+    },
+    "defaultProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {"type": "boolean"},
+        "spec": {"type": "object"}
+      }
+    },
+    "bots": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": {"type": "string", "minLength": 1},
+        "fabricTag": {"type": "string", "minLength": 1},
+        "azaleaTag": {"type": "string", "minLength": 1},
+        "assetFetcherImage": {"type": "string", "minLength": 1},
+        "spawnInterval": {"$ref": "#/$defs/duration"}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "port": {"$ref": "#/$defs/port"},
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "interval": {"$ref": "#/$defs/duration"},
+            "scrapeTimeout": {"$ref": "#/$defs/duration"},
+            "labels": {"$ref": "#/$defs/stringMap"}
+          }
+        }
+      }
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {"$ref": "#/$defs/port"},
+        "readiness": {"type": "object"},
+        "liveness": {"type": "object"}
+      }
+    },
+    "resources": {"type": "object"},
+    "podSecurityContext": {"type": "object"},
+    "securityContext": {"type": "object"},
+    "nodeSelector": {"$ref": "#/$defs/stringMap"},
+    "tolerations": {"type": "array", "items": {"type": "object"}},
+    "affinity": {"type": "object"},
+    "podAnnotations": {"$ref": "#/$defs/stringMap"},
+    "podLabels": {"$ref": "#/$defs/stringMap"},
+    "extraEnv": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"name": {"type": "string", "minLength": 1}},
+        "required": ["name"]
+      }
+    },
+    "extraArgs": {"type": "array", "items": {"type": "string"}}
+  }
+}

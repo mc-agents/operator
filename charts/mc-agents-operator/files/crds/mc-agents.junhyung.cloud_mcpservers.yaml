@@ -39,6 +39,9 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
+        description: |-
+          MCPServer is one MCP server with its own token, run in the namespace that asks for it. Everything
+          it makes is named <name>-mcp-server and owned by it.
         properties:
           apiVersion:
             description: |-
@@ -58,9 +61,11 @@ spec:
           metadata:
             type: object
           spec:
+            description: MCPServerSpec describes one MCP server, run as a single-replica
+              Deployment in this namespace.
             properties:
               affinity:
-                description: Affinity is a group of affinity scheduling rules.
+                description: Goes onto the pod as written.
                 properties:
                   nodeAffinity:
                     description: Describes node affinity scheduling rules for the
@@ -972,6 +977,7 @@ spec:
                     type: object
                 type: object
               auth:
+                description: The bearer token agents present.
                 properties:
                   existingSecret:
                     description: |-
@@ -980,20 +986,26 @@ spec:
                     type: string
                   secretKey:
                     default: token
+                    description: The key in that Secret holding the token.
                     type: string
                 type: object
               bots:
+                description: How the server gets its bots.
                 properties:
                   profileRef:
                     description: Written into every MinecraftBot this server creates.
                     properties:
                       kind:
                         default: MinecraftBotProfile
+                        description: MinecraftBotProfile in the bot's namespace, or
+                          ClusterMinecraftBotProfile.
                         enum:
                         - MinecraftBotProfile
                         - ClusterMinecraftBotProfile
                         type: string
                       name:
+                        description: Name of the profile. One that does not exist
+                          makes the bot Failed.
                         minLength: 1
                         type: string
                     required:
@@ -1007,10 +1019,13 @@ spec:
                     type: boolean
                 type: object
               feeds:
+                description: What the bots relay from the game.
                 properties:
                   muted:
                     description: Feeds the bots never send.
                     items:
+                      description: Feed is one of the streams a bot relays from the
+                        game.
                       enum:
                       - chat
                       - actionBar
@@ -1035,19 +1050,23 @@ spec:
                   operator's --mcp-server-tag.
                 properties:
                   pullPolicy:
-                    description: PullPolicy describes a policy for if/when to pull
-                      a container image
+                    description: Goes onto the pod as written.
                     enum:
                     - Always
                     - IfNotPresent
                     - Never
                     type: string
                   repository:
+                    description: Full image name without a tag; empty builds <registry>/bot-<kind>
+                      from the nearest profile.
                     type: string
                   tag:
+                    description: 'Used as written: unlike a profile''s tag, no -mc<minecraftVersion>
+                      is appended.'
                     type: string
                 type: object
               imagePullSecrets:
+                description: Goes onto the pod as written.
                 items:
                   description: |-
                     LocalObjectReference contains enough information to let you locate the
@@ -1065,8 +1084,18 @@ spec:
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
+              logFormat:
+                description: |-
+                  Structured log format of the server process, for a log pipeline that indexes fields; empty
+                  keeps the plain console lines.
+                enum:
+                - ecs
+                - logstash
+                - gelf
+                type: string
               logLevel:
                 default: INFO
+                description: Log level of the server process.
                 enum:
                 - TRACE
                 - DEBUG
@@ -1083,17 +1112,21 @@ spec:
               nodeSelector:
                 additionalProperties:
                   type: string
+                description: Goes onto the pod as written.
                 type: object
               podAnnotations:
                 additionalProperties:
                   type: string
+                description: Extra annotations on the pod.
                 type: object
               podLabels:
                 additionalProperties:
                   type: string
+                description: Extra labels on the pod; the operator's own labels win.
                 type: object
               resources:
-                description: ResourceRequirements describes the compute resource requirements.
+                description: Resources of the server container; empty is 100m/512Mi
+                  requested with a 1Gi limit.
                 properties:
                   claims:
                     description: |-
@@ -1152,15 +1185,18 @@ spec:
                     type: object
                 type: object
               service:
+                description: The Service carrying the MCP port.
                 properties:
                   annotations:
                     additionalProperties:
                       type: string
+                    description: Goes onto the Service as written, for a load balancer
+                      or DNS controller.
                     type: object
                   type:
                     default: ClusterIP
-                    description: Service Type string describes ingress methods for
-                      a service
+                    description: Type of the Service carrying the MCP port; the bearer
+                      token is that port's gate.
                     enum:
                     - ClusterIP
                     - NodePort
@@ -1168,6 +1204,7 @@ spec:
                     type: string
                 type: object
               tolerations:
+                description: Goes onto the pod as written.
                 items:
                   description: |-
                     The pod this Toleration is attached to tolerates any taint that matches
@@ -1208,8 +1245,13 @@ spec:
                 type: array
             type: object
           status:
+            description: MCPServerStatus is where the server is and whether it is
+              accepting bots.
             properties:
               conditions:
+                description: |-
+                  Ready is True once the server pod is available; False names what the kubelet or the
+                  Deployment is stuck on.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -1272,15 +1314,21 @@ spec:
                 description: Where an agent calls, from inside the cluster.
                 type: string
               image:
+                description: The image the server runs.
                 type: string
               observedGeneration:
+                description: The generation of the spec this status reflects.
                 format: int64
                 type: integer
               tokenSecretRef:
+                description: The Secret and key holding the bearer token, generated
+                  or not.
                 properties:
                   key:
+                    description: Key inside it.
                     type: string
                   name:
+                    description: Name of the Secret.
                     type: string
                 required:
                 - key

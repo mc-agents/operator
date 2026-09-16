@@ -3,6 +3,7 @@ package pool_test
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,11 +34,12 @@ func init() {
 }
 
 type harness struct {
-	client client.Client
-	under  *poolctl.Reconciler
+	client   client.Client
+	under    *poolctl.Reconciler
+	recorder *record.FakeRecorder
 }
 
-func newHarness(t *testing.T, replicas int32) *harness {
+func newHarness(t *testing.T, replicas int32, others ...client.Object) *harness {
 	t.Helper()
 
 	pool := &v1alpha1.MinecraftBotPool{
@@ -57,10 +59,11 @@ func newHarness(t *testing.T, replicas int32) *harness {
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&v1alpha1.MinecraftBotPool{}, &v1alpha1.MinecraftBot{}).
-		WithObjects(pool).
+		WithObjects(append([]client.Object{pool}, others...)...).
 		Build()
 
-	return &harness{client: c, under: poolctl.NewReconciler(c, record.NewFakeRecorder(32))}
+	recorder := record.NewFakeRecorder(32)
+	return &harness{client: c, under: poolctl.NewReconciler(c, recorder), recorder: recorder}
 }
 
 func (h *harness) reconcile(t *testing.T) {
@@ -204,5 +207,44 @@ func TestPoolStatusCountsLinkedBots(t *testing.T) {
 	}
 	if pool.Status.Selector == "" {
 		t.Error("status.selector must be set or kubectl scale cannot resolve the scale subresource")
+	}
+}
+
+func TestAForeignBotHoldingAnOrdinalIsReportedAndSkipped(t *testing.T) {
+	taken := &v1alpha1.MinecraftBot{
+		ObjectMeta: metav1.ObjectMeta{Name: "scouts-1", Namespace: namespace, UID: "somebody-elses"},
+		Spec: v1alpha1.MinecraftBotSpec{
+			Kind:             v1alpha1.BotKindAzalea,
+			MinecraftVersion: "26.1.2",
+			Server:           v1alpha1.MCPServerRef{Host: "elsewhere.qa.svc", Port: 8765},
+		},
+	}
+	h := newHarness(t, 3, taken)
+	h.reconcile(t)
+
+	want := []string{"scouts-0", "scouts-1", "scouts-2"}
+	if got := h.botNames(t); !reflect.DeepEqual(got, want) {
+		t.Fatalf("bots are %v, want %v; the ordinals past the clash must still be created", got, want)
+	}
+	if got := h.bot(t, "scouts-1"); got.UID != "somebody-elses" || got.Spec.Server.Host != "elsewhere.qa.svc" {
+		t.Fatal("the foreign bot was taken over")
+	}
+	pool := h.pool(t)
+	if !strings.Contains(pool.Status.LastError, "scouts-1 already exists and is not owned by this pool") {
+		t.Errorf("status.lastError is %q; the clash is not in it", pool.Status.LastError)
+	}
+	if pool.Status.Replicas != 2 {
+		t.Errorf("status.replicas is %d, want 2: the foreign bot is not the pool's", pool.Status.Replicas)
+	}
+	select {
+	case e := <-h.recorder.Events:
+		if !strings.HasPrefix(e, "Normal ScaledUp") {
+			t.Errorf("first event is %q, want the ScaledUp for scouts-0", e)
+		}
+	default:
+		t.Fatal("no events at all")
+	}
+	if e := <-h.recorder.Events; !strings.HasPrefix(e, "Warning NameClash bot scouts-1") {
+		t.Errorf("event is %q, want a NameClash warning", e)
 	}
 }

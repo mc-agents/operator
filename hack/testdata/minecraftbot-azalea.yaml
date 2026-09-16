@@ -1,0 +1,11 @@
+# A bot with nothing to dial. verify-k3d.sh only needs its pod to exist and stay up, and an azalea
+# bot does that without an MCP server; a host that resolves would make the test depend on one.
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MinecraftBot
+metadata:
+  name: tagged
+spec:
+  kind: azalea
+  minecraftVersion: "26.1.2"
+  server:
+    host: nowhere.invalid

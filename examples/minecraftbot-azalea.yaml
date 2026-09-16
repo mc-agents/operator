@@ -1,9 +1,13 @@
+# A bot without a client: it speaks the protocol at a few MiB, which is what a scenario with many
+# bots at once wants. join-server writes these; by hand is for a bot outside any MCPServer.
 apiVersion: mc-agents.junhyung.cloud/v1alpha1
 kind: MinecraftBot
 metadata:
-  name: tagged
+  name: watcher
 spec:
   kind: azalea
   minecraftVersion: "26.1.2"
   server:
-    host: nowhere.invalid
+    # The bot-link Service of MCPServer "mc-agents" in namespace "game".
+    host: mc-agents-mcp-server-bots.game.svc
+    port: 8765

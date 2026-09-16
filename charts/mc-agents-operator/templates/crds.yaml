@@ -1,0 +1,18 @@
+{{- /*
+Helm applies a chart's crds/ directory on the first install and never again, so a release that
+adds a field would leave every upgraded cluster pruning it. Rendering the generated CRDs from
+files/ makes them ordinary release resources that upgrade with the chart. The keep policy is the
+cert-manager shape: an uninstall leaves the CRDs, and with them every MCPServer and bot, rather
+than deleting a tenant's objects because the operator went away.
+*/ -}}
+{{- if .Values.crds.install }}
+{{- range $path, $_ := .Files.Glob "files/crds/*.yaml" }}
+{{- $crd := $.Files.Get $path | fromYaml }}
+{{- if $.Values.crds.keep }}
+{{- $annotations := merge (dict "helm.sh/resource-policy" "keep") ($crd.metadata.annotations | default dict) }}
+{{- $_ := set $crd.metadata "annotations" $annotations }}
+{{- end }}
+---
+{{ toYaml $crd }}
+{{- end }}
+{{- end }}

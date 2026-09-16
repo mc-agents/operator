@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   REGISTRY: junhyung.cloud
   IMAGE: junhyung.cloud/library/operator
@@ -27,45 +30,57 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # On a pull request the base branch is the comparison; on a push it is the commit that was
-      # replaced. A force push leaves nothing to compare against, so only the consistency half
-      # runs there.
-      - name: version is consistent and was raised
+      # The same target a laptop runs, so nothing passes here that failed there. On a pull request
+      # the base branch is the version comparison; on a push it is the commit that was replaced. A
+      # force push leaves nothing to compare against, so BASE stays empty and only the consistency
+      # half of the version check runs.
+      - run: make check
         env:
-          FORCED: ${{ github.event.forced }}
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          EMPTY_SHA: '0000000000000000000000000000000000000000'
-        run: |
-          if [ "$FORCED" = true ] || [ -z "$BASE" ] || [ "$BASE" = "$EMPTY_SHA" ]; then
-            bash hack/check-version.sh
-          else
-            bash hack/check-version.sh "$BASE"
-          fi
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (!github.event.forced && github.event.before) || '' }}
 
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test -race ./...
+      # Advisory of the day it runs, so it stays out of make check: a vulnerability published
+      # overnight should fail the next push, not the one that was already green.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-      - name: generated files match the types
-        run: |
-          make generate
-          git diff --exit-code -- api charts/mc-agents-operator/crds \
-            || { echo "::error::run make generate and commit the result"; exit 1; }
+  # The reconcile loop is not proven by unit tests, and until here nothing that was published had
+  # run on a cluster. The same script a laptop runs, against the same kind of cluster.
+  verify:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The action's own default is a k3d from 2022. This is the k3d a laptop runs, and with it the
+      # k3s the README names as the version verified against.
+      - uses: AbsaOSS/k3d-action@v2
+        with:
+          cluster-name: ci
+          k3d-version: v5.9.0
+          args: --agents 1 --wait
 
-      - name: chart renders
+      - run: make k3d-deploy k3d-verify K3D_CLUSTER=ci
+
+      - name: collect the cluster's side of the story
+        if: failure()
         run: |
-          helm lint charts/mc-agents-operator
-          helm template charts/mc-agents-operator > /dev/null
+          mkdir -p verify-failure
+          kubectl --context k3d-ci get events -A --sort-by=.lastTimestamp > verify-failure/events.txt || true
+          kubectl --context k3d-ci -n mc-agents-system logs deploy/mc-agents-operator --all-containers > verify-failure/operator.log || true
+          kubectl --context k3d-ci get minecraftbots,minecraftbotpools,mcpservers -A -o yaml > verify-failure/objects.yaml || true
+          kubectl --context k3d-ci get pods -A -o wide > verify-failure/pods.txt || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: verify-failure
+          path: verify-failure
 
   publish:
-    needs: check
+    needs: [check, verify]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       # Harbor takes a robot account, so the credentials are repository secrets. cosign
       # stays keyless: the certificate comes from Fulcio and no key lives here either.
-      # Lets cosign fetch a short-lived certificate from Fulcio, so no key lives in the repo.
       id-token: write
     steps:
       - uses: actions/checkout@v5
@@ -77,7 +92,8 @@ jobs:
           sha=$(git rev-parse --short=8 HEAD)
           case "$version" in *-*) sep=. ;; *) sep=- ;; esac
           echo "value=${version}${sep}${stamp}.g${sha}" >> "$GITHUB_OUTPUT"
-          # A chart's appVersion falls back to this one, so it has to exist in the registry.
+          # The chart is published under this version with it as appVersion, and an empty
+          # image.tag falls back to appVersion, so the image has to exist under it too.
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
@@ -110,23 +126,26 @@ jobs:
       - name: sign image
         run: cosign sign --yes "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
 
+      # Under the plain release version, which is what `helm install --version` is given. The
+      # stamped image tag stays the immutable one; a chart stamped the same way was never
+      # installable by the version anyone knew.
       - name: push chart
         env:
-          TAG: ${{ steps.tag.outputs.value }}
+          VERSION: ${{ steps.tag.outputs.version }}
           REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
         run: |
-          helm package charts/mc-agents-operator --version "$TAG" --app-version "$TAG" --destination dist-chart
+          helm package charts/mc-agents-operator --version "$VERSION" --app-version "$VERSION" --destination dist-chart
           printf '%s' "$REGISTRY_PASSWORD" \
             | helm registry login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
-          helm push "dist-chart/mc-agents-operator-$TAG.tgz" "$CHART_REPO" 2>&1 | tee push.log
+          helm push "dist-chart/mc-agents-operator-$VERSION.tgz" "$CHART_REPO" 2>&1 | tee push.log
           digest=$(grep -o 'sha256:[0-9a-f]\{64\}' push.log | head -1)
           test -n "$digest"
           cosign sign --yes "$CHART_REPO_HOST/mc-agents-operator@$digest"
 
       - run: |
           {
-            echo "published \`${{ env.IMAGE }}:${{ steps.tag.outputs.value }}\`"
+            echo "published \`${{ env.IMAGE }}:${{ steps.tag.outputs.value }}\` and chart \`${{ env.CHART_REPO }}/mc-agents-operator --version ${{ steps.tag.outputs.version }}\`"
             echo ""
             echo "verify:"
             echo '```'

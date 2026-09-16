@@ -52,14 +52,25 @@ fmt: ## Rewrite every file with gofmt.
 	$(GO) fmt ./...
 
 .PHONY: lint
-lint: ## Lint the chart and check the generated manifests are current.
+lint: ## Lint the chart and check the generated files are current.
 	helm lint $(CHART)
 	helm template $(CHART) > /dev/null
-	$(MAKE) manifests
-	git diff --exit-code -- $(CHART)/crds api
+	$(MAKE) generate
+	git diff --exit-code -- $(CHART)/files/crds api
+
+.PHONY: lint-go
+lint-go: ## Run golangci-lint with the repository's configuration.
+	bash hack/install-tools.sh
+	$(BIN)/golangci-lint run ./...
+
+# With no BASE the comparison is the merge base with origin/main, which on a branch is the fork
+# point and on main itself is HEAD; with no origin at all only the consistency half runs.
+.PHONY: check-version
+check-version: ## VERSION and Chart.yaml agree, and VERSION went up since BASE.
+	bash hack/check-version.sh $${BASE:-$$(git merge-base origin/main HEAD 2>/dev/null || true)}
 
 .PHONY: check
-check: vet test lint ## Everything CI runs.
+check: check-version vet test lint lint-go ## Everything CI runs.
 
 ##@ Code generation
 
@@ -99,14 +110,15 @@ k3d-down: k3d-guard ## Delete the dedicated k3d cluster.
 .PHONY: k3d-deploy
 k3d-deploy: k3d-guard image ## Build, import and install the operator into the k3d cluster.
 	k3d image import $(K3D_IMAGE) -c $(K3D_CLUSTER)
-	# Helm installs crds/ only on the first install, so a changed CRD would never reach the cluster.
-	kubectl --context $(K3D_CONTEXT) apply --server-side --force-conflicts -f $(CHART)/crds
+	# Helm 4 applies server-side, and a CRD that kubectl applied before 0.13 has kubectl as the
+	# field manager of its schema; taking it over is the point of the upgrade.
 	helm --kube-context $(K3D_CONTEXT) upgrade --install mc-agents-operator $(CHART) \
 		--namespace $(NAMESPACE) --create-namespace \
 		--set image.registry=mc-agents \
 		--set image.repository=operator \
 		--set image.tag=dev \
 		--set image.pullPolicy=Never \
+		--force-conflicts \
 		--wait
 	# The dev tag never changes, so the pod spec is identical and helm would leave the old
 	# image running. Restart explicitly or the next verify run tests the previous build.

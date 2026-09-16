@@ -1,0 +1,8 @@
+# The generated-token path: verify-k3d.sh asserts the Secret the operator makes, so this names no
+# existingSecret.
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MCPServer
+metadata:
+  name: mc-agents
+spec:
+  maxBots: 8

@@ -31,6 +31,10 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
+        description: |-
+          MinecraftBotProfile holds the defaults the bots of one namespace are built from. The one named
+          "default" is taken by every bot in the namespace that names no profile. Changing a profile
+          rebuilds the pods of the bots that use it.
         properties:
           apiVersion:
             description: |-
@@ -50,11 +54,12 @@ spec:
           metadata:
             type: object
           spec:
-            description: BotProfileSpec is what a bot takes for every field its own
-              spec leaves empty.
+            description: |-
+              BotProfileSpec is what a bot takes for every field its own spec leaves empty. Labels and
+              annotations merge key by key; every other field is taken whole.
             properties:
               affinity:
-                description: Affinity is a group of affinity scheduling rules.
+                description: Goes onto the pod as written.
                 properties:
                   nodeAffinity:
                     description: Describes node affinity scheduling rules for the
@@ -966,10 +971,10 @@ spec:
                     type: object
                 type: object
               azalea:
+                description: Defaults for azalea bots.
                 properties:
                   resources:
-                    description: ResourceRequirements describes the compute resource
-                      requirements.
+                    description: Resources of the bot container.
                     properties:
                       claims:
                         description: |-
@@ -1033,23 +1038,39 @@ spec:
                     type: string
                 type: object
               fabric:
+                description: Defaults for fabric bots.
                 properties:
                   assets:
+                    description: Where the client jar and assets come from.
                     properties:
                       claimName:
+                        description: |-
+                          A PersistentVolumeClaim holding the assets; empty uses an emptyDir and every pod re-downloads
+                          200-600MB. Fill one PVC per Minecraft version with a Job and share it.
                         type: string
                       fetcherImage:
+                        description: |-
+                          Image of the initContainer that fetches the assets; empty uses the operator's
+                          --asset-fetcher-image with -mc<minecraftVersion> appended.
                         type: string
                       mountPath:
                         default: /mc-assets
+                        description: |-
+                          Where the volume is mounted in the pod; the assets for a version are under
+                          <mountPath>/<minecraftVersion>, which the bot is handed as MC_ASSETS_DIR.
                         type: string
                       prefilled:
+                        description: 'The claim already holds the assets: skip the
+                          initContainer and pod start is a mount.'
                         type: boolean
                       readOnly:
+                        description: |-
+                          The bot container mounts the assets read-only. The claim itself is mounted read-only only
+                          together with prefilled, since the fetcher has to write into it otherwise.
                         type: boolean
                       resources:
-                        description: ResourceRequirements describes the compute resource
-                          requirements.
+                        description: Resources of the fetcher initContainer; goes
+                          onto the pod as written.
                         properties:
                           claims:
                             description: |-
@@ -1111,34 +1132,42 @@ spec:
                         anyOf:
                         - type: integer
                         - type: string
+                        description: Size limit of the emptyDir used when no claim
+                          is named.
                         pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                         x-kubernetes-int-or-string: true
                     type: object
                   render:
+                    description: What the client draws with.
                     properties:
                       enabled:
                         default: true
+                        description: Whether the client renders at all. Off, it cannot
+                          take a screenshot.
                         type: boolean
                       frameRateLimit:
                         default: 1
+                        description: Frames per second the client renders. One is
+                          enough for screenshots and keeps the CPU down.
                         format: int32
                         maximum: 60
                         minimum: 1
                         type: integer
                       height:
                         default: 480
+                        description: Height of the framebuffer in pixels.
                         format: int32
                         minimum: 240
                         type: integer
                       width:
                         default: 854
+                        description: Width of the framebuffer in pixels.
                         format: int32
                         minimum: 320
                         type: integer
                     type: object
                   resources:
-                    description: ResourceRequirements describes the compute resource
-                      requirements.
+                    description: Resources of the bot container.
                     properties:
                       claims:
                         description: |-
@@ -1202,6 +1231,7 @@ spec:
                     type: string
                 type: object
               imagePullSecrets:
+                description: Goes onto the pod as written.
                 items:
                   description: |-
                     LocalObjectReference contains enough information to let you locate the
@@ -1222,19 +1252,23 @@ spec:
               nodeSelector:
                 additionalProperties:
                   type: string
+                description: Goes onto the pod as written.
                 type: object
               podAnnotations:
                 additionalProperties:
                   type: string
+                description: Annotations on the pod, under the bot's own.
                 type: object
               podLabels:
                 additionalProperties:
                   type: string
+                description: Labels on the pod, under the bot's own.
                 type: object
               registry:
                 description: Registry and namespace holding the bot images.
                 type: string
               tolerations:
+                description: Goes onto the pod as written.
                 items:
                   description: |-
                     The pod this Toleration is attached to tolerates any taint that matches

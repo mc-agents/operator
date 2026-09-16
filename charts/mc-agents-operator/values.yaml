@@ -26,6 +26,15 @@ rbac:
   # managed elsewhere; the operator cannot work without them.
   create: true
 
+crds:
+  # Rendered from files/crds as release resources, so an upgrade carries the schema with it;
+  # Helm's own crds/ directory is applied once and never again. Off when the CRDs are managed
+  # elsewhere, and then they have to be applied by hand before every schema release.
+  install: true
+  # helm.sh/resource-policy: keep. Uninstalling the operator leaves the CRDs, and with them every
+  # MCPServer and bot, rather than deleting a tenant's objects because the operator went away.
+  keep: true
+
 # Empty watches every namespace. Setting it narrows the informers, not the RBAC: the ClusterRole
 # stays cluster-wide so the same release can be widened later without a permission change. The
 # operator lives in its own namespace and tenants put MCPServers and bots in theirs, so a narrowed
@@ -53,13 +62,15 @@ leaderElection:
 # operator release was verified against.
 mcpServer:
   image: junhyung.cloud/library/mcp-server
-  tag: "0.58.1"
+  tag: "0.61.0"
 
 # Renders ClusterMinecraftBotProfile "default", which every bot without a nearer profile takes its
 # image tags and pod settings from. Its spec is a MinecraftBotProfile spec, e.g.
 #   spec:
 #     fabric: {tag: 0.64.0}
 #     azalea: {tag: 0.16.0}
+# Helm validates every rendered object before it creates any, so on a first install the CRD this
+# needs does not exist yet: install once, then turn it on.
 defaultProfile:
   create: false
   spec: {}
@@ -71,14 +82,17 @@ bots:
   #   <registry>/bot-azalea:<azaleaTag>-mc<spec.minecraftVersion>
   # so an image is always pinned to one Minecraft version: each kind is built against one.
   registry: junhyung.cloud/library
-  fabricTag: latest
-  azaleaTag: latest
+  # The bot releases this operator release was verified against. latest resolves to a moving
+  # tag, and IfNotPresent keeps whatever build a node pulled first.
+  fabricTag: "0.69.1"
+  azaleaTag: "0.21.1"
 
   # fabric bots cannot ship the Minecraft client jar inside the image: redistribution is not
   # ours to grant. An initContainer pulls it from the Mojang version manifest into a cache
   # volume instead. Point spec.assets.claimName at a PVC that a Job already filled to turn that
-  # 200-600MB download into a mount.
-  assetFetcherImage: junhyung.cloud/library/mc-assets:latest
+  # 200-600MB download into a mount. Published from bot-fabric under its version, so the tag is
+  # fabricTag's; the Minecraft version is appended as for the bot images.
+  assetFetcherImage: junhyung.cloud/library/mc-assets:0.69.1
 
   # Paper refuses a second login from the same address within four seconds. Bot pods each get
   # their own IP so this rarely bites, but a pool scaling from 0 to 8 creates eight pods in one
@@ -143,5 +157,8 @@ podLabels: {}
 # Extra environment variables. The operator is configured by flags, so nothing here collides.
 extraEnv: []
 
-# CLI flags the chart does not model, passed straight through, e.g. ["-v", "4"]
+# CLI flags the chart does not model, passed straight through. Verbosity is --zap-log-level:
+# debug shows the operator's V(1) lines, an integer shows down to that depth, and 2 includes
+# the spawn throttle waits. -v raises only what client-go says.
 extraArgs: []
+# extraArgs: ["--zap-log-level=2"]

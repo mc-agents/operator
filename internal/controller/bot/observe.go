@@ -6,64 +6,58 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
+	"github.com/mc-agents/operator/internal/podstatus"
 )
 
 type Observation struct {
 	Phase   v1alpha1.BotPhase
 	Link    v1alpha1.LinkState
+	Reason  string
 	Message string
 }
 
-var terminalWaitReasons = map[string]bool{
-	"ImagePullBackOff":           true,
-	"ErrImagePull":               true,
-	"InvalidImageName":           true,
-	"CreateContainerConfigError": true,
-	"CreateContainerError":       true,
-	"CrashLoopBackOff":           true,
-}
-
-// A crash loop is only a failure once it has repeated. The kubelet reports the back-off after the
-// first exit, and calling that Failed made the MCP server give the bot back: the pod went, a
-// transient first run of the asset fetcher took its only log with it, and the same bot asked for
-// again filled its cache and linked.
-const crashLoopRestarts = 3
-
 func Observe(pod *corev1.Pod) Observation {
 	if pod == nil {
-		return Observation{Phase: v1alpha1.BotPhasePending, Link: v1alpha1.LinkStateUnknown}
+		return Observation{Phase: v1alpha1.BotPhasePending, Link: v1alpha1.LinkStateUnknown, Reason: v1alpha1.ReasonPodPending}
 	}
 	if pod.DeletionTimestamp != nil {
-		return Observation{Phase: v1alpha1.BotPhaseTerminating, Link: v1alpha1.LinkStateUnknown}
+		return Observation{Phase: v1alpha1.BotPhaseTerminating, Link: v1alpha1.LinkStateUnknown, Reason: v1alpha1.ReasonTerminating}
 	}
 
 	link := linkState(pod)
 
-	if reason, message, ok := blockedContainer(pod); ok {
+	if reason, message, ok := podstatus.Blocked(pod); ok {
 		return Observation{
 			Phase:   v1alpha1.BotPhaseFailed,
 			Link:    link,
+			Reason:  reason,
 			Message: fmt.Sprintf("%s: %s", reason, message),
 		}
 	}
 
 	switch pod.Status.Phase {
 	case corev1.PodRunning:
-		return Observation{Phase: v1alpha1.BotPhaseRunning, Link: link}
-	case corev1.PodSucceeded:
-		return Observation{
-			Phase:   v1alpha1.BotPhaseFailed,
-			Link:    v1alpha1.LinkStateLost,
-			Message: "bot process exited",
+		reason := v1alpha1.ReasonWaitingForLink
+		if link == v1alpha1.LinkStateLinked {
+			reason = v1alpha1.ReasonLinked
 		}
-	case corev1.PodFailed:
+		return Observation{Phase: v1alpha1.BotPhaseRunning, Link: link, Reason: reason}
+	case corev1.PodSucceeded, corev1.PodFailed:
 		return Observation{
 			Phase:   v1alpha1.BotPhaseFailed,
 			Link:    v1alpha1.LinkStateLost,
-			Message: podFailureMessage(pod),
+			Reason:  v1alpha1.ReasonPodExited,
+			Message: exitMessage(pod),
 		}
 	default:
-		return Observation{Phase: v1alpha1.BotPhaseStarting, Link: link}
+		observed := Observation{Phase: v1alpha1.BotPhaseStarting, Link: link, Reason: v1alpha1.ReasonPodPending}
+		// A pod nothing will schedule stays Pending with an empty status until join-server gives
+		// up; the scheduler's reason is the only thing that says why.
+		if reason, message, ok := unschedulable(pod); ok {
+			observed.Reason = reason
+			observed.Message = fmt.Sprintf("%s: %s", reason, message)
+		}
+		return observed
 	}
 }
 
@@ -91,42 +85,23 @@ func podReady(pod *corev1.Pod) bool {
 	return false
 }
 
-func blockedContainer(pod *corev1.Pod) (string, string, bool) {
-	all := make([]corev1.ContainerStatus, 0, len(pod.Status.InitContainerStatuses)+len(pod.Status.ContainerStatuses))
-	all = append(all, pod.Status.InitContainerStatuses...)
-	all = append(all, pod.Status.ContainerStatuses...)
-	for _, status := range all {
-		waiting := status.State.Waiting
-		if waiting == nil || !terminalWaitReasons[waiting.Reason] {
-			continue
+func unschedulable(pod *corev1.Pod) (string, string, bool) {
+	if pod.Status.Phase != corev1.PodPending {
+		return "", "", false
+	}
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse && cond.Reason != "" {
+			return cond.Reason, cond.Message, true
 		}
-		if waiting.Reason == "CrashLoopBackOff" && status.RestartCount < crashLoopRestarts {
-			continue
-		}
-		message := waiting.Message
-		if message == "" {
-			message = status.Name
-		}
-		if exited := lastExit(status); exited != "" {
-			message += "; " + exited
-		}
-		return waiting.Reason, message, true
 	}
 	return "", "", false
 }
 
-// What the container said as it last exited. With FallbackToLogsOnError on the container, the
-// kubelet puts the tail of its log in the message, which outlives the pod.
-func lastExit(status corev1.ContainerStatus) string {
-	t := status.LastTerminationState.Terminated
-	if t == nil {
-		return ""
+func exitMessage(pod *corev1.Pod) string {
+	if pod.Status.Phase == corev1.PodSucceeded {
+		return "bot process exited"
 	}
-	said := fmt.Sprintf("%s last exited with code %d (%s)", status.Name, t.ExitCode, t.Reason)
-	if t.Message != "" {
-		said += ": " + t.Message
-	}
-	return said
+	return podFailureMessage(pod)
 }
 
 func podFailureMessage(pod *corev1.Pod) string {

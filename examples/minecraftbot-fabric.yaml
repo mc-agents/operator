@@ -6,7 +6,7 @@ spec:
   kind: fabric
   minecraftVersion: "26.1.2"
   server:
-    host: mc-mcp-server.mc-agents.svc
+    host: mc-agents-mcp-server-bots.game.svc
     port: 8765
   render:
     enabled: true

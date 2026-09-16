@@ -1,17 +1,16 @@
-apiVersion: mc-agents.junhyung.cloud/v1alpha1
-kind: ClusterMinecraftBotProfile
-metadata:
-  name: default
-spec:
-  fabric:
-    tag: cluster-default
-  azalea:
-    tag: cluster-default
----
+# The defaults bots in this namespace are built from. A bot takes every field its own spec leaves
+# empty from the nearest profile: this one when it is named "default" or by spec.profileRef, then
+# the ClusterMinecraftBotProfile named "default", then the operator's flags.
 apiVersion: mc-agents.junhyung.cloud/v1alpha1
 kind: MinecraftBotProfile
 metadata:
-  name: default
+  name: quest
 spec:
+  fabric:
+    # Bot releases, without the Minecraft version; -mc<minecraftVersion> is appended.
+    tag: "0.69.1"
   azalea:
-    tag: namespace-default
+    tag: "0.21.1"
+    resources:
+      limits:
+        memory: 512Mi

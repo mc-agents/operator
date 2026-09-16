@@ -18,27 +18,34 @@ metadata:
   name: {{ include "mc-agents-operator.fullname" . }}
   labels:
     {{- include "mc-agents-operator.labels" . | nindent 4 }}
+# Each verb is one the controllers issue; the pool creates, updates and deletes the bots it owns,
+# and status goes through the subresource alone.
 rules:
   - apiGroups: ["mc-agents.junhyung.cloud"]
-    resources: ["minecraftbots", "minecraftbotpools"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    resources: ["minecraftbots"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["mc-agents.junhyung.cloud"]
+    resources: ["minecraftbotpools", "mcpservers", "minecraftbotprofiles", "clusterminecraftbotprofiles"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["mc-agents.junhyung.cloud"]
     resources: ["minecraftbots/status", "minecraftbotpools/status", "mcpservers/status"]
-    verbs: ["get", "update", "patch"]
-  - apiGroups: ["mc-agents.junhyung.cloud"]
-    resources: ["mcpservers", "minecraftbotprofiles", "clusterminecraftbotprofiles"]
-    verbs: ["get", "list", "watch"]
-  # What an MCPServer runs. A Role can only grant what the operator itself holds, which the
-  # minecraftbots rule above already covers.
+    verbs: ["update"]
+  # What an MCPServer runs, server-side applied: a patch, and a create the first time. A Role can
+  # only grant what the operator itself holds, which the minecraftbots rule above already covers.
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "patch"]
   - apiGroups: [""]
     resources: ["services", "serviceaccounts"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  # The gate on the bot-link port, one per MCPServer.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  # Deleted when an MCPServer turns provisioning off; the rest go with their owner.
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
   # Only the token it generates. Secrets are read one at a time, never listed or cached.
   - apiGroups: [""]
     resources: ["secrets"]
@@ -51,9 +58,6 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -69,6 +73,37 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "mc-agents-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.leaderElection.enabled }}
+---
+# One Lease in one namespace, so the grant is a Role there rather than a cluster-wide rule.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "mc-agents-operator.fullname" . }}-leader-election
+  namespace: {{ .Values.leaderElection.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "mc-agents-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "mc-agents-operator.fullname" . }}-leader-election
+  namespace: {{ .Values.leaderElection.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "mc-agents-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "mc-agents-operator.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "mc-agents-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 ---
 # Namespace admins and editors get the mc-agents resources in the namespaces they already hold,
 # through the built-in admin, edit and view roles.

@@ -30,14 +30,19 @@ import (
 const (
 	reasonSpawned    = "Spawned"
 	reasonRecreating = "Recreating"
+	reasonPodExited  = "PodExited"
 	reasonThrottled  = "Throttled"
 	reasonInvalid    = "InvalidSpec"
 	reasonAdopted    = "AdoptionRefused"
+	reasonLinked     = "Linked"
+	reasonLinkLost   = "LinkLost"
+	reasonPodFailed  = "PodFailed"
 )
 
 const (
 	predecessorMessage = "waiting for the previous pod to terminate"
 	predecessorRequeue = 2 * time.Second
+	throttledMessage   = "waiting for the spawn interval"
 )
 
 type Reconciler struct {
@@ -108,7 +113,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			Link:               v1alpha1.LinkStateUnknown,
 			PodName:            bot.Status.PodName,
 			ObservedGeneration: bot.Generation,
-		})
+		}, v1alpha1.ReasonTerminating)
 	}
 
 	resolved, err := profile.Lookup(ctx, r.client, bot)
@@ -129,7 +134,7 @@ func (r *Reconciler) reportInvalid(ctx context.Context, bot *v1alpha1.MinecraftB
 		Link:               v1alpha1.LinkStateUnknown,
 		LastError:          err.Error(),
 		ObservedGeneration: bot.Generation,
-	})
+	}, v1alpha1.ReasonInvalidSpec)
 }
 
 func (r *Reconciler) converge(ctx context.Context, bot *v1alpha1.MinecraftBot, desired *corev1.Pod, profiles []string) (ctrl.Result, error) {
@@ -150,27 +155,39 @@ func (r *Reconciler) converge(ctx context.Context, bot *v1alpha1.MinecraftBot, d
 		return ctrl.Result{}, r.reportClash(ctx, bot, pod.Name)
 	}
 
-	if pod.DeletionTimestamp.IsZero() && needsReplacement(&pod, desired) {
-		logger.Info("replacing pod", "pod", pod.Name)
-		r.recorder.Eventf(bot, corev1.EventTypeNormal, reasonRecreating,
-			"pod %s no longer matches the spec", pod.Name)
+	if pod.DeletionTimestamp.IsZero() {
+		switch {
+		case specChanged(&pod, desired):
+			logger.Info("replacing pod", "pod", pod.Name, "reason", reasonRecreating)
+			r.recorder.Eventf(bot, corev1.EventTypeNormal, reasonRecreating,
+				"pod %s no longer matches the spec", pod.Name)
+		case podExited(&pod):
+			logger.Info("replacing pod", "pod", pod.Name, "reason", reasonPodExited)
+			r.recorder.Eventf(bot, corev1.EventTypeWarning, reasonPodExited,
+				"pod %s: %s", pod.Name, exitMessage(&pod))
+		default:
+			return r.mirror(ctx, bot, &pod, profiles)
+		}
 		if err := r.deletePod(ctx, &pod); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
+	return r.mirror(ctx, bot, &pod, profiles)
+}
 
-	observed := Observe(&pod)
+func (r *Reconciler) mirror(ctx context.Context, bot *v1alpha1.MinecraftBot, pod *corev1.Pod, profiles []string) (ctrl.Result, error) {
+	observed := Observe(pod)
 	return ctrl.Result{}, r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
 		Phase:              observed.Phase,
 		Link:               observed.Link,
 		PodName:            pod.Name,
-		Image:              containerImage(&pod),
+		Image:              containerImage(pod),
 		Profiles:           profiles,
 		LastError:          observed.Message,
 		LastSpawnTime:      bot.Status.LastSpawnTime,
 		ObservedGeneration: bot.Generation,
-	})
+	}, observed.Reason)
 }
 
 func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desired *corev1.Pod, profiles []string) (ctrl.Result, error) {
@@ -178,14 +195,17 @@ func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desi
 
 	if ok, wait := r.gate.Acquire(r.now()); !ok {
 		logger.V(2).Info("spawn throttled", "wait", wait)
-		r.recorder.Eventf(bot, corev1.EventTypeNormal, reasonThrottled,
-			"waiting %s before creating the pod", wait.Round(time.Millisecond))
+		// Once on entering the wait. Every requeue lands here again with a different remainder,
+		// and a pool scaling up would otherwise leave hundreds of events nothing can fold.
+		if bot.Status.Phase != v1alpha1.BotPhasePending || bot.Status.LastError != "" {
+			r.recorder.Event(bot, corev1.EventTypeNormal, reasonThrottled, throttledMessage)
+		}
 		if err := r.writeStatus(ctx, bot, v1alpha1.MinecraftBotStatus{
 			Phase:              v1alpha1.BotPhasePending,
 			Link:               v1alpha1.LinkStateUnknown,
 			LastSpawnTime:      bot.Status.LastSpawnTime,
 			ObservedGeneration: bot.Generation,
-		}); err != nil {
+		}, v1alpha1.ReasonPodPending); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: wait}, nil
@@ -210,7 +230,7 @@ func (r *Reconciler) spawn(ctx context.Context, bot *v1alpha1.MinecraftBot, desi
 		Profiles:           profiles,
 		LastSpawnTime:      &now,
 		ObservedGeneration: bot.Generation,
-	})
+	}, v1alpha1.ReasonPodPending)
 }
 
 // confirmClash re-reads the pod straight from the API server. A create that
@@ -256,7 +276,7 @@ func (r *Reconciler) awaitPredecessor(ctx context.Context, bot *v1alpha1.Minecra
 		LastError:          predecessorMessage,
 		LastSpawnTime:      bot.Status.LastSpawnTime,
 		ObservedGeneration: bot.Generation,
-	}); err != nil {
+	}, v1alpha1.ReasonPodPending); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: predecessorRequeue}, nil
@@ -271,13 +291,14 @@ func (r *Reconciler) reportClash(ctx context.Context, bot *v1alpha1.MinecraftBot
 		PodName:            name,
 		LastError:          message,
 		ObservedGeneration: bot.Generation,
-	})
+	}, v1alpha1.ReasonPodNotOwned)
 }
 
-func needsReplacement(pod, desired *corev1.Pod) bool {
-	if pod.Annotations[v1alpha1.AnnotationSpecHash] != desired.Annotations[v1alpha1.AnnotationSpecHash] {
-		return true
-	}
+func specChanged(pod, desired *corev1.Pod) bool {
+	return pod.Annotations[v1alpha1.AnnotationSpecHash] != desired.Annotations[v1alpha1.AnnotationSpecHash]
+}
+
+func podExited(pod *corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
 }
 
@@ -290,10 +311,12 @@ func (r *Reconciler) deletePod(ctx context.Context, pod *corev1.Pod) error {
 }
 
 // writeStatus re-fetches before each attempt so the update lands on the latest
-// resourceVersion, and skips the call entirely when nothing moved.
-func (r *Reconciler) writeStatus(ctx context.Context, bot *v1alpha1.MinecraftBot, status v1alpha1.MinecraftBotStatus) error {
+// resourceVersion, and skips the call entirely when nothing moved. reason goes
+// into the conditions: Ready's while the bot is not linked, Degraded's while it
+// is Failed. A bot deleted under a reconcile in flight is not an error.
+func (r *Reconciler) writeStatus(ctx context.Context, bot *v1alpha1.MinecraftBot, status v1alpha1.MinecraftBotStatus, reason string) error {
 	status.Conditions = append([]metav1.Condition(nil), bot.Status.Conditions...)
-	applyConditions(&status)
+	applyConditions(&status, reason)
 
 	if reflect.DeepEqual(bot.Status, status) {
 		return nil
@@ -310,23 +333,45 @@ func (r *Reconciler) writeStatus(ctx context.Context, bot *v1alpha1.MinecraftBot
 		latest.Status = status
 		return r.client.Status().Update(ctx, &latest)
 	})
-	if err != nil {
+	if err := client.IgnoreNotFound(err); err != nil {
 		return fmt.Errorf("update minecraftbot status: %w", err)
 	}
+	r.recordTransition(ctx, bot, bot.Status, status)
 	return nil
 }
 
-func applyConditions(status *v1alpha1.MinecraftBotStatus) {
+// recordTransition puts the moves worth a timeline into events: the link coming up or going, and a
+// pod that was running turning Failed. Every other change is in status already.
+func (r *Reconciler) recordTransition(ctx context.Context, bot *v1alpha1.MinecraftBot, old, status v1alpha1.MinecraftBotStatus) {
+	if old.Phase == status.Phase && old.Link == status.Link {
+		return
+	}
+	log.FromContext(ctx).Info("bot status changed",
+		"phase", status.Phase, "link", status.Link,
+		"previousPhase", old.Phase, "previousLink", old.Link)
+	if old.Link != status.Link {
+		switch status.Link {
+		case v1alpha1.LinkStateLinked:
+			r.recorder.Event(bot, corev1.EventTypeNormal, reasonLinked, "bot is linked to the MCP server")
+		case v1alpha1.LinkStateLost:
+			r.recorder.Event(bot, corev1.EventTypeWarning, reasonLinkLost, "bot lost its link to the MCP server")
+		}
+	}
+	if status.Phase == v1alpha1.BotPhaseFailed && old.Phase != v1alpha1.BotPhaseFailed && status.PodName != "" {
+		r.recorder.Eventf(bot, corev1.EventTypeWarning, reasonPodFailed, "pod %s: %s", status.PodName, status.LastError)
+	}
+}
+
+func applyConditions(status *v1alpha1.MinecraftBotStatus, reason string) {
+	if reason == "" {
+		reason = v1alpha1.ReasonPodFailed
+	}
 	ready := metav1.ConditionFalse
-	reason := string(status.Phase)
 	message := status.LastError
 	if status.Link == v1alpha1.LinkStateLinked {
 		ready = metav1.ConditionTrue
-		reason = "Linked"
+		reason = v1alpha1.ReasonLinked
 		message = "bot is connected to the MCP server"
-	}
-	if reason == "" {
-		reason = "Unknown"
 	}
 	if message == "" {
 		message = fmt.Sprintf("link is %s", linkOrUnknown(status.Link))
@@ -344,7 +389,7 @@ func applyConditions(status *v1alpha1.MinecraftBotStatus) {
 	degradedMessage := "no error reported"
 	if status.Phase == v1alpha1.BotPhaseFailed {
 		degraded = metav1.ConditionTrue
-		degradedReason = "PodFailed"
+		degradedReason = reason
 		degradedMessage = status.LastError
 		if degradedMessage == "" {
 			degradedMessage = "pod is not running"

@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +44,10 @@ func Name(server *v1alpha1.MCPServer) string {
 
 func GeneratedSecretName(server *v1alpha1.MCPServer) string {
 	return Name(server) + "-auth"
+}
+
+func BotServiceName(server *v1alpha1.MCPServer) string {
+	return Name(server) + "-bots"
 }
 
 func TokenSecret(server *v1alpha1.MCPServer) v1alpha1.SecretKeyRef {
@@ -94,6 +99,8 @@ func ServiceAccount(server *v1alpha1.MCPServer) *corev1.ServiceAccount {
 	}
 }
 
+// Service carries the MCP port alone, of whatever type the spec asks for: the bearer token is that
+// port's gate. The bot-link port is on BotService.
 func Service(server *v1alpha1.MCPServer) *corev1.Service {
 	meta := objectMeta(server, Name(server))
 	meta.Annotations = maps.Clone(server.Spec.Service.Annotations)
@@ -105,7 +112,48 @@ func Service(server *v1alpha1.MCPServer) *corev1.Service {
 			Selector: SelectorLabels(server),
 			Ports: []corev1.ServicePort{
 				{Name: portMCP, Port: v1alpha1.MCPServerPort, TargetPort: intstr.FromString(portMCP), Protocol: corev1.ProtocolTCP},
+			},
+		},
+	}
+}
+
+// BotService carries the bot-link port and is always ClusterIP. That port has no authentication,
+// so a NodePort or LoadBalancer asked for on the MCP port must not take it out of the cluster.
+func BotService(server *v1alpha1.MCPServer) *corev1.Service {
+	return &corev1.Service{
+		TypeMeta:   typeMeta("v1", "Service"),
+		ObjectMeta: objectMeta(server, BotServiceName(server)),
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: SelectorLabels(server),
+			Ports: []corev1.ServicePort{
 				{Name: portBotLink, Port: BotLinkPort, TargetPort: intstr.FromString(portBotLink), Protocol: corev1.ProtocolTCP},
+			},
+		},
+	}
+}
+
+// NetworkPolicy is the gate on the bot-link port: only bot pods, from any namespace, may dial it.
+// The MCP port stays open to everything, since the bearer token is its gate. The kubelet's probes
+// bypass the policy on kube-router, Calico and Cilium alike, so the readiness probe needs no rule.
+func NetworkPolicy(server *v1alpha1.MCPServer) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		TypeMeta:   typeMeta("networking.k8s.io/v1", "NetworkPolicy"),
+		ObjectMeta: objectMeta(server, Name(server)),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: SelectorLabels(server)},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				{
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: ptr(corev1.ProtocolTCP), Port: ptr(intstr.FromString(portBotLink))}},
+					From: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{},
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{v1alpha1.LabelName: v1alpha1.BotPodName}},
+					}},
+				},
+				{
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: ptr(corev1.ProtocolTCP), Port: ptr(intstr.FromString(portMCP))}},
+				},
 			},
 		},
 	}
@@ -151,11 +199,13 @@ func GeneratedSecret(server *v1alpha1.MCPServer, token string) *corev1.Secret {
 }
 
 func Deployment(server *v1alpha1.MCPServer, defaults Defaults) *appsv1.Deployment {
+	// The pod carries the managed-by label so it lands in the operator's filtered cache, where
+	// the reconciler reads what the kubelet is stuck on. The selector stays the two stable ones.
 	podLabels := maps.Clone(server.Spec.PodLabels)
 	if podLabels == nil {
 		podLabels = map[string]string{}
 	}
-	maps.Copy(podLabels, SelectorLabels(server))
+	maps.Copy(podLabels, Labels(server))
 
 	return &appsv1.Deployment{
 		TypeMeta:   typeMeta("apps/v1", "Deployment"),
@@ -245,15 +295,20 @@ func env(server *v1alpha1.MCPServer) []corev1.EnvVar {
 		muted = append(muted, string(feed))
 	}
 	env := []corev1.EnvVar{
+		// A token-less server binds loopback on its own; in a pod the Service has to reach it.
+		{Name: "MCP_BIND_HOST", Value: "0.0.0.0"},
 		{Name: "MCP_PORT", Value: strconv.Itoa(v1alpha1.MCPServerPort)},
 		{Name: "BOT_LINK_PORT", Value: strconv.Itoa(BotLinkPort)},
 		{Name: "MCP_MAX_BOTS", Value: strconv.Itoa(int(cmp.Or(server.Spec.MaxBots, defaultMaxBots)))},
 		{Name: "MCP_BOTS_PROVISION", Value: provision},
 		{Name: "MCP_BOTS_NAMESPACE", Value: server.Namespace},
-		{Name: "MCP_BOTS_MCP_HOST", Value: host(server)},
+		{Name: "MCP_BOTS_MCP_HOST", Value: botHost(server)},
 		{Name: "MCP_LOG_LEVEL", Value: cmp.Or(server.Spec.LogLevel, defaultLogLevel)},
 		{Name: "BOT_LINK_REPEAT_FLUSH_MS", Value: strconv.Itoa(int(cmp.Or(server.Spec.Feeds.RepeatFlushMs, defaultFlushMs)))},
 		{Name: "BOT_LINK_MUTED_FEEDS", Value: strings.Join(muted, ",")},
+	}
+	if server.Spec.LogFormat != "" {
+		env = append(env, corev1.EnvVar{Name: "LOGGING_STRUCTURED_FORMAT_CONSOLE", Value: server.Spec.LogFormat})
 	}
 	if ref := server.Spec.Bots.ProfileRef; ref != nil {
 		env = append(env,
@@ -281,6 +336,12 @@ func resources(server *v1alpha1.MCPServer) corev1.ResourceRequirements {
 
 func host(server *v1alpha1.MCPServer) string {
 	return fmt.Sprintf("%s.%s.svc", Name(server), server.Namespace)
+}
+
+// botHost is what the server writes into the bots it creates: the ClusterIP Service in front of the
+// bot-link port, never the MCP one, which may be a load balancer.
+func botHost(server *v1alpha1.MCPServer) string {
+	return fmt.Sprintf("%s.%s.svc", BotServiceName(server), server.Namespace)
 }
 
 func objectMeta(server *v1alpha1.MCPServer, name string) metav1.ObjectMeta {

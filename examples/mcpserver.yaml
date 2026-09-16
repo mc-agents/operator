@@ -1,6 +1,20 @@
+# One MCP server for the namespace it is created in. Everything it makes is named
+# mc-agents-mcp-server and owned by this object; its endpoint and token Secret land in status.
 apiVersion: mc-agents.junhyung.cloud/v1alpha1
 kind: MCPServer
 metadata:
   name: mc-agents
 spec:
-  maxBots: 8
+  auth:
+    # A Secret in this namespace holding the bearer token under the key "token". Leave it out and
+    # the operator generates mc-agents-mcp-server-auth once and never rewrites it.
+    existingSecret: mc-agents-token
+  bots:
+    # Written into every bot join-server creates, so their image tags and pod settings come from
+    # one place. Leave it out and a bot takes the namespace's profile named "default".
+    profileRef:
+      name: quest
+  maxBots: 16
+  feeds:
+    # Feeds the bots never send. A scenario that only reads chat has no use for a title flood.
+    muted: [toast, effect]

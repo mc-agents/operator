@@ -44,6 +44,9 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
+        description: |-
+          MinecraftBotPool keeps a replica count of ordinal-named MinecraftBots, so scaling the bots is
+          one field rather than one CR per bot.
         properties:
           apiVersion:
             description: |-
@@ -63,29 +66,45 @@ spec:
           metadata:
             type: object
           spec:
+            description: MinecraftBotPoolSpec is a replica count and the bot it is
+              made of.
             properties:
               replicas:
                 default: 1
+                description: |-
+                  How many bots the pool keeps, named <pool>-0 upwards. Scaling down removes the highest
+                  ordinals, so a name an agent holds survives as long as its ordinal does.
                 format: int32
                 minimum: 0
                 type: integer
               template:
+                description: |-
+                  The bot every replica is made from. botName must be empty: three replicas dialling in under
+                  one name would leave two of them Waiting forever.
                 properties:
                   metadata:
+                    description: Labels and annotations put on every bot of the pool.
                     properties:
                       annotations:
                         additionalProperties:
                           type: string
+                        description: Annotations on every bot.
                         type: object
                       labels:
                         additionalProperties:
                           type: string
+                        description: Labels on every bot; the operator's pool and
+                          managed-by labels win.
                         type: object
                     type: object
                   spec:
+                    description: |-
+                      Spec of every bot of the pool. Editing it rewrites the bots in place, and each bot then
+                      replaces its own pod.
                     properties:
                       affinity:
-                        description: Affinity is a group of affinity scheduling rules.
+                        description: Goes onto the pod as written; empty takes the
+                          profile's.
                         properties:
                           nodeAffinity:
                             description: Describes node affinity scheduling rules
@@ -1009,21 +1028,37 @@ spec:
                             type: object
                         type: object
                       assets:
+                        description: Where a fabric bot's client jar and assets come
+                          from; rejected on any other kind.
                         properties:
                           claimName:
+                            description: |-
+                              A PersistentVolumeClaim holding the assets; empty uses an emptyDir and every pod re-downloads
+                              200-600MB. Fill one PVC per Minecraft version with a Job and share it.
                             type: string
                           fetcherImage:
+                            description: |-
+                              Image of the initContainer that fetches the assets; empty uses the operator's
+                              --asset-fetcher-image with -mc<minecraftVersion> appended.
                             type: string
                           mountPath:
                             default: /mc-assets
+                            description: |-
+                              Where the volume is mounted in the pod; the assets for a version are under
+                              <mountPath>/<minecraftVersion>, which the bot is handed as MC_ASSETS_DIR.
                             type: string
                           prefilled:
+                            description: 'The claim already holds the assets: skip
+                              the initContainer and pod start is a mount.'
                             type: boolean
                           readOnly:
+                            description: |-
+                              The bot container mounts the assets read-only. The claim itself is mounted read-only only
+                              together with prefilled, since the fetcher has to write into it otherwise.
                             type: boolean
                           resources:
-                            description: ResourceRequirements describes the compute
-                              resource requirements.
+                            description: Resources of the fetcher initContainer; goes
+                              onto the pod as written.
                             properties:
                               claims:
                                 description: |-
@@ -1086,14 +1121,22 @@ spec:
                             anyOf:
                             - type: integer
                             - type: string
+                            description: Size limit of the emptyDir used when no claim
+                              is named.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                         type: object
                       botName:
+                        description: |-
+                          The name the bot reports in hello and agents address it by; empty uses the CR name
+                          truncated to 16 characters. Pool bots must leave it empty and are named <pool>-<ordinal>.
                         maxLength: 16
                         pattern: ^[A-Za-z0-9_]{1,16}$
                         type: string
                       env:
+                        description: |-
+                          Appended to the bot container's environment. The names the operator sets itself are
+                          reserved, since a later entry would silently win.
                         items:
                           description: EnvVar represents an environment variable present
                             in a Container.
@@ -1249,23 +1292,34 @@ spec:
                           required:
                           - name
                           type: object
+                        maxItems: 64
                         type: array
+                        x-kubernetes-validations:
+                        - message: env names the operator sets are reserved
+                          rule: '!self.exists(e, e.name in [''MCP_SERVER_HOST'',''MCP_SERVER_PORT'',''BOT_NAME'',''BOT_KIND'',''MC_VERSION'',''HEALTH_PORT'',''BOT_WORK_DIR'',''MC_ASSETS_DIR'',''BOT_RENDER'',''BOT_RENDER_WIDTH'',''BOT_RENDER_HEIGHT'',''BOT_FRAME_RATE_LIMIT'',''POD_NAME'',''POD_NAMESPACE'',''NODE_NAME''])'
                       image:
+                        description: Overrides the image the profiles and flags would
+                          build.
                         properties:
                           pullPolicy:
-                            description: PullPolicy describes a policy for if/when
-                              to pull a container image
+                            description: Goes onto the pod as written.
                             enum:
                             - Always
                             - IfNotPresent
                             - Never
                             type: string
                           repository:
+                            description: Full image name without a tag; empty builds
+                              <registry>/bot-<kind> from the nearest profile.
                             type: string
                           tag:
+                            description: 'Used as written: unlike a profile''s tag,
+                              no -mc<minecraftVersion> is appended.'
                             type: string
                         type: object
                       imagePullSecrets:
+                        description: Goes onto the pod as written; empty takes the
+                          profile's.
                         items:
                           description: |-
                             LocalObjectReference contains enough information to let you locate the
@@ -1285,71 +1339,92 @@ spec:
                         type: array
                       kind:
                         default: fabric
-                        description: |-
-                          fabric is a real Minecraft client: it renders, takes screenshots and draws a resource pack, and
-                          costs about 2GiB. azalea speaks the protocol without a client, at a few MiB, for the many bots a
-                          scenario can need at once and for the tools that do not need to see anything.
+                        description: 'Which bot runs: fabric is a real client that
+                          renders, azalea speaks the protocol without one.'
                         enum:
                         - fabric
                         - azalea
                         type: string
                       minecraftVersion:
+                        description: |-
+                          Minecraft version the bot claims and the image is built for, appended to the image tag as
+                          -mc<minecraftVersion>.
                         pattern: ^[0-9]+\.[0-9]+(\.[0-9]+)?$
                         type: string
                       nodeSelector:
                         additionalProperties:
                           type: string
+                        description: Goes onto the pod as written; empty takes the
+                          profile's.
                         type: object
                       podAnnotations:
                         additionalProperties:
                           type: string
+                        description: Extra annotations on the pod, merged key by key
+                          over the profile's.
                         type: object
                       podLabels:
                         additionalProperties:
                           type: string
+                        description: Extra labels on the pod, merged key by key over
+                          the profile's; the operator's own labels win.
                         type: object
                       profileRef:
                         description: |-
                           Fills whatever this spec leaves empty. Without one the bot takes the namespace's
-                          MinecraftBotProfile "default", then the ClusterMinecraftBotProfile "default".
+                          MinecraftBotProfile "default", then the ClusterMinecraftBotProfile "default". A profile
+                          named here that does not exist makes the bot Failed rather than built from the defaults.
                         properties:
                           kind:
                             default: MinecraftBotProfile
+                            description: MinecraftBotProfile in the bot's namespace,
+                              or ClusterMinecraftBotProfile.
                             enum:
                             - MinecraftBotProfile
                             - ClusterMinecraftBotProfile
                             type: string
                           name:
+                            description: Name of the profile. One that does not exist
+                              makes the bot Failed.
                             minLength: 1
                             type: string
                         required:
                         - name
                         type: object
                       render:
+                        description: What a fabric bot draws with; rejected on any
+                          other kind.
                         properties:
                           enabled:
                             default: true
+                            description: Whether the client renders at all. Off, it
+                              cannot take a screenshot.
                             type: boolean
                           frameRateLimit:
                             default: 1
+                            description: Frames per second the client renders. One
+                              is enough for screenshots and keeps the CPU down.
                             format: int32
                             maximum: 60
                             minimum: 1
                             type: integer
                           height:
                             default: 480
+                            description: Height of the framebuffer in pixels.
                             format: int32
                             minimum: 240
                             type: integer
                           width:
                             default: 854
+                            description: Width of the framebuffer in pixels.
                             format: int32
                             minimum: 320
                             type: integer
                         type: object
                       resources:
-                        description: ResourceRequirements describes the compute resource
-                          requirements.
+                        description: |-
+                          Resources of the bot container; empty takes the profile's for this kind, then a measured
+                          default (about 2Gi for fabric, 64Mi for azalea).
                         properties:
                           claims:
                             description: |-
@@ -1408,12 +1483,19 @@ spec:
                             type: object
                         type: object
                       server:
+                        description: |-
+                          The MCP server the bot dials. There is no game server address: the bot learns that from the
+                          MCP server after the handshake.
                         properties:
                           host:
+                            description: Host the bot dials, handed to the pod as
+                              MCP_SERVER_HOST.
                             minLength: 1
                             type: string
                           port:
                             default: 8765
+                            description: Bot-link port of the MCP server, handed to
+                              the pod as MCP_SERVER_PORT.
                             format: int32
                             maximum: 65535
                             minimum: 1
@@ -1422,12 +1504,17 @@ spec:
                         - host
                         type: object
                       serviceAccountName:
+                        description: ServiceAccount of the pod; empty runs with none
+                          and no token mounted.
                         type: string
                       terminationGracePeriodSeconds:
+                        description: Goes onto the pod as written; empty is 30 seconds.
                         format: int64
                         minimum: 0
                         type: integer
                       tolerations:
+                        description: Goes onto the pod as written; empty takes the
+                          profile's.
                         items:
                           description: |-
                             The pod this Toleration is attached to tolerates any taint that matches
@@ -1481,9 +1568,15 @@ spec:
             required:
             - template
             type: object
+            x-kubernetes-validations:
+            - message: botName is per bot; pool bots dial in as <pool>-<ordinal>
+              rule: '!has(self.template.spec.botName)'
           status:
+            description: MinecraftBotPoolStatus rolls the bots' status up into the
+              counters behind the scale subresource.
             properties:
               conditions:
+                description: Ready is True once every replica is Linked.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -1543,20 +1636,29 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               lastError:
+                description: |-
+                  The first bot's lastError, prefixed with its name, or a bot of a pool name that is not the
+                  pool's to take.
                 type: string
               linkedReplicas:
+                description: Bots the MCP server has accepted.
                 format: int32
                 type: integer
               observedGeneration:
+                description: The generation of the spec this status reflects.
                 format: int64
                 type: integer
               readyReplicas:
+                description: Bots whose pod is Running.
                 format: int32
                 type: integer
               replicas:
+                description: Bots the pool currently owns.
                 format: int32
                 type: integer
               selector:
+                description: Label selector matching the pool's bots, for kubectl
+                  scale and HPA.
                 type: string
             type: object
         type: object

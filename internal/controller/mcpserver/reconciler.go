@@ -1,5 +1,5 @@
-// Package mcpserver reconciles an MCPServer into the Deployment, Service, ServiceAccount, RBAC and
-// token that run one MCP server in the tenant's own namespace.
+// Package mcpserver reconciles an MCPServer into the Deployment, Services, NetworkPolicy,
+// ServiceAccount, RBAC and token that run one MCP server in the tenant's own namespace.
 package mcpserver
 
 import (
@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -22,10 +23,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/mc-agents/operator/api/v1alpha1"
 	"github.com/mc-agents/operator/internal/mcpserverspec"
+	"github.com/mc-agents/operator/internal/podstatus"
 )
 
 const (
@@ -62,11 +66,23 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		For(&v1alpha1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
+		// The server pod is the ReplicaSet's, not ours, so Owns does not reach it; what the kubelet
+		// is stuck on has to come through its labels.
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(serverOf)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers}).
 		Complete(r)
+}
+
+func serverOf(_ context.Context, obj client.Object) []reconcile.Request {
+	labels := obj.GetLabels()
+	if labels[v1alpha1.LabelName] != mcpserverspec.ComponentName || labels[v1alpha1.LabelMCPServer] == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: obj.GetNamespace(), Name: labels[v1alpha1.LabelMCPServer]}}}
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -86,6 +102,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	objects := []client.Object{
 		mcpserverspec.ServiceAccount(server),
 		mcpserverspec.Service(server),
+		mcpserverspec.BotService(server),
+		mcpserverspec.NetworkPolicy(server),
 	}
 	if mcpserverspec.Provisions(server) {
 		objects = append(objects, mcpserverspec.Role(server), mcpserverspec.RoleBinding(server))
@@ -106,7 +124,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.client.Get(ctx, client.ObjectKeyFromObject(deployment), &live); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("get deployment: %w", err)
 	}
-	return ctrl.Result{}, r.writeStatus(ctx, server, readyCondition(server, &live))
+	var pods corev1.PodList
+	if err := r.client.List(ctx, &pods, client.InNamespace(server.Namespace), client.MatchingLabels(mcpserverspec.SelectorLabels(server))); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list server pods: %w", err)
+	}
+	return ctrl.Result{}, r.writeStatus(ctx, server, readyCondition(server, &live, pods.Items))
 }
 
 // ensureToken creates the generated Secret when it is missing and leaves it alone when it is not. An
@@ -174,7 +196,10 @@ func (r *Reconciler) apply(ctx context.Context, obj client.Object) error {
 	return nil
 }
 
-func readyCondition(server *v1alpha1.MCPServer, deployment *appsv1.Deployment) metav1.Condition {
+// readyCondition is Available once the Deployment has a pod up. Until then it names what is in the
+// way: a pod the kubelet cannot bring up first, since a mistyped tag would otherwise read as
+// "waiting for the server pod" for the ten minutes the Deployment takes to call it stalled.
+func readyCondition(server *v1alpha1.MCPServer, deployment *appsv1.Deployment, pods []corev1.Pod) metav1.Condition {
 	condition := metav1.Condition{
 		Type:               v1alpha1.ConditionReady,
 		Status:             metav1.ConditionFalse,
@@ -187,6 +212,16 @@ func readyCondition(server *v1alpha1.MCPServer, deployment *appsv1.Deployment) m
 		condition.Reason = "Available"
 		condition.Message = "the server is accepting bots"
 		return condition
+	}
+	for i := range pods {
+		if pods[i].DeletionTimestamp != nil {
+			continue
+		}
+		if reason, message, ok := podstatus.Blocked(&pods[i]); ok {
+			condition.Reason = reason
+			condition.Message = fmt.Sprintf("pod %s: %s", pods[i].Name, message)
+			return condition
+		}
 	}
 	for _, c := range deployment.Status.Conditions {
 		if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse {
@@ -236,7 +271,7 @@ func (r *Reconciler) writeStatus(ctx context.Context, server *v1alpha1.MCPServer
 		latest.Status = status
 		return r.client.Status().Update(ctx, &latest)
 	})
-	if err != nil {
+	if err := client.IgnoreNotFound(err); err != nil {
 		return fmt.Errorf("update mcpserver status: %w", err)
 	}
 	return nil

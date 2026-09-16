@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,6 +31,7 @@ import (
 	mcpserverctl "github.com/mc-agents/operator/internal/controller/mcpserver"
 	poolctl "github.com/mc-agents/operator/internal/controller/pool"
 	"github.com/mc-agents/operator/internal/mcpserverspec"
+	"github.com/mc-agents/operator/internal/metrics"
 	"github.com/mc-agents/operator/internal/podspec"
 	"github.com/mc-agents/operator/internal/throttle"
 )
@@ -47,15 +49,21 @@ func init() {
 
 func main() {
 	klog.InitFlags(nil)
+	// --zap-log-level and friends. The production preset drops every V(1)+ line, and -v alone
+	// only raises klog, so without these the operator's own debug lines could never be seen.
+	zapOpts := zap.Options{}
+	zapOpts.BindFlags(flag.CommandLine)
 
 	opts := defaultOptions()
 	opts.bind(flag.CommandLine)
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
+	// client-go and the leader election log through klog; one sink, one format.
+	klog.SetLogger(ctrl.Log)
 
 	if err := run(ctrl.SetupSignalHandler(), opts); err != nil {
-		klog.ErrorS(err, "operator exited")
+		ctrl.Log.Error(err, "operator exited")
 		os.Exit(1)
 	}
 }
@@ -114,8 +122,11 @@ func run(ctx context.Context, opts options) error {
 	if err := servers.SetupWithManager(mgr, opts.workers); err != nil {
 		return fmt.Errorf("mcpserver reconciler: %w", err)
 	}
+	if err := metrics.Register(mgr.GetCache()); err != nil {
+		return fmt.Errorf("register metrics: %w", err)
+	}
 
-	klog.InfoS("mc-agents-operator starting",
+	ctrl.Log.Info("mc-agents-operator starting",
 		"version", version,
 		"namespaces", namespaceLabel(opts.watchNamespaces),
 		"spawnInterval", opts.spawnInterval,
@@ -149,12 +160,13 @@ func managerOptions(opts options) manager.Options {
 		Cache: cache.Options{
 			SyncPeriod: &opts.resyncPeriod,
 			ByObject: map[client.Object]cache.ByObject{
-				&corev1.Pod{}:            managed,
-				&appsv1.Deployment{}:     managed,
-				&corev1.Service{}:        managed,
-				&corev1.ServiceAccount{}: managed,
-				&rbacv1.Role{}:           managed,
-				&rbacv1.RoleBinding{}:    managed,
+				&corev1.Pod{}:                 managed,
+				&appsv1.Deployment{}:          managed,
+				&corev1.Service{}:             managed,
+				&corev1.ServiceAccount{}:      managed,
+				&networkingv1.NetworkPolicy{}: managed,
+				&rbacv1.Role{}:                managed,
+				&rbacv1.RoleBinding{}:         managed,
 			},
 		},
 	}

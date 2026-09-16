@@ -16,13 +16,15 @@ func TestObserve(t *testing.T) {
 		pod      *corev1.Pod
 		phase    v1alpha1.BotPhase
 		link     v1alpha1.LinkState
+		reason   string
 		contains string
 	}{
 		{
-			name:  "no pod yet",
-			pod:   nil,
-			phase: v1alpha1.BotPhasePending,
-			link:  v1alpha1.LinkStateUnknown,
+			name:   "no pod yet",
+			pod:    nil,
+			phase:  v1alpha1.BotPhasePending,
+			link:   v1alpha1.LinkStateUnknown,
+			reason: v1alpha1.ReasonPodPending,
 		},
 		{
 			name: "a missing image is reported instead of looking like a slow start",
@@ -35,6 +37,7 @@ func TestObserve(t *testing.T) {
 			}),
 			phase:    v1alpha1.BotPhaseFailed,
 			link:     v1alpha1.LinkStateUnknown,
+			reason:   "ImagePullBackOff",
 			contains: "ImagePullBackOff",
 		},
 		{
@@ -49,25 +52,46 @@ func TestObserve(t *testing.T) {
 			}(),
 			phase:    v1alpha1.BotPhaseFailed,
 			link:     v1alpha1.LinkStateUnknown,
+			reason:   "ErrImagePull",
 			contains: "ErrImagePull",
 		},
 		{
-			name:  "running but not ready means the link is not up yet",
-			pod:   running(false, 0),
-			phase: v1alpha1.BotPhaseRunning,
-			link:  v1alpha1.LinkStateWaiting,
+			name: "a pod nothing will schedule says so while it stays Starting",
+			pod: func() *corev1.Pod {
+				p := pending()
+				p.Status.Conditions = []corev1.PodCondition{{
+					Type:    corev1.PodScheduled,
+					Status:  corev1.ConditionFalse,
+					Reason:  corev1.PodReasonUnschedulable,
+					Message: "0/1 nodes are available: 1 Insufficient memory.",
+				}}
+				return p
+			}(),
+			phase:    v1alpha1.BotPhaseStarting,
+			link:     v1alpha1.LinkStateUnknown,
+			reason:   corev1.PodReasonUnschedulable,
+			contains: "Unschedulable: 0/1 nodes are available: 1 Insufficient memory.",
 		},
 		{
-			name:  "ready means the bot said hello to the MCP server",
-			pod:   running(true, 0),
-			phase: v1alpha1.BotPhaseRunning,
-			link:  v1alpha1.LinkStateLinked,
+			name:   "running but not ready means the link is not up yet",
+			pod:    running(false, 0),
+			phase:  v1alpha1.BotPhaseRunning,
+			link:   v1alpha1.LinkStateWaiting,
+			reason: v1alpha1.ReasonWaitingForLink,
 		},
 		{
-			name:  "a restarted container that is not ready again is a lost link",
-			pod:   running(false, 3),
-			phase: v1alpha1.BotPhaseRunning,
-			link:  v1alpha1.LinkStateLost,
+			name:   "ready means the bot said hello to the MCP server",
+			pod:    running(true, 0),
+			phase:  v1alpha1.BotPhaseRunning,
+			link:   v1alpha1.LinkStateLinked,
+			reason: v1alpha1.ReasonLinked,
+		},
+		{
+			name:   "a restarted container that is not ready again is a lost link",
+			pod:    running(false, 3),
+			phase:  v1alpha1.BotPhaseRunning,
+			link:   v1alpha1.LinkStateLost,
+			reason: v1alpha1.ReasonWaitingForLink,
 		},
 	}
 
@@ -79,6 +103,9 @@ func TestObserve(t *testing.T) {
 			}
 			if got.Link != tc.link {
 				t.Errorf("link is %q, want %q", got.Link, tc.link)
+			}
+			if got.Reason != tc.reason {
+				t.Errorf("reason is %q, want %q", got.Reason, tc.reason)
 			}
 			if tc.contains != "" && !strings.Contains(got.Message, tc.contains) {
 				t.Errorf("message %q does not mention %q", got.Message, tc.contains)
