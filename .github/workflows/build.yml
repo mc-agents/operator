@@ -20,7 +20,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # The version check diffs against the commit this one replaced, which a shallow
           # clone does not have.
@@ -48,7 +48,7 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # The action's own default is a k3d from 2022. This is the k3d a laptop runs, and with it the
       # k3s the README names as the version verified against.
       - uses: AbsaOSS/k3d-action@v2
@@ -83,7 +83,7 @@ jobs:
       # stays keyless: the certificate comes from Fulcio and no key lives here either.
       id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - id: tag
         run: |
