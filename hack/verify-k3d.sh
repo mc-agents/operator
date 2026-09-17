@@ -95,9 +95,9 @@ spec:
 EOF
 )"
 
-echo "== applying examples"
-k apply -f "${ROOT}/examples/minecraftbot.yaml"
-k apply -f "${ROOT}/examples/minecraftbotpool.yaml"
+echo "== applying the fixtures"
+k apply -f "${FIXTURES}/minecraftbot.yaml"
+k apply -f "${FIXTURES}/minecraftbotpool.yaml"
 
 echo "== a single bot becomes a pod"
 await "minecraftbot/scout names its pod" 60 equals minecraftbot scout .status.podName scout

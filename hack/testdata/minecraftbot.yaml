@@ -1,0 +1,12 @@
+# The single bot the verification drives: azalea, so its pod is a few megabytes and comes and goes
+# in seconds on a runner with an empty cache, where a fabric pod is still pulling assets when the
+# script asks for it to be gone. Nothing to dial, as for every bot here.
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MinecraftBot
+metadata:
+  name: scout
+spec:
+  kind: azalea
+  minecraftVersion: "26.1.2"
+  server:
+    host: nowhere.invalid

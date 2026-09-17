@@ -1,0 +1,16 @@
+# The pool the verification scales, on azalea bots for the same reason as the single one.
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MinecraftBotPool
+metadata:
+  name: scouts
+spec:
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        squad: qa
+    spec:
+      kind: azalea
+      minecraftVersion: "26.1.2"
+      server:
+        host: nowhere.invalid
