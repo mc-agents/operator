@@ -2,8 +2,8 @@ apiVersion: v2
 name: mc-agents-operator
 description: Kubernetes operator that keeps Minecraft bot pods alive for the mc-agents MCP server.
 type: application
-version: 0.13.3
-appVersion: "0.13.3"
+version: 0.14.0
+appVersion: "0.14.0"
 keywords:
   - minecraft
   - mcp

@@ -11,14 +11,25 @@ permissions:
 
 env:
   REGISTRY: junhyung.cloud
-  IMAGE: junhyung.cloud/library/operator
+  IMAGE: junhyung.cloud/mc-agents/operator
   # Charts must not share a repository with the image: the same tag overwrites the other.
-  CHART_REPO: oci://junhyung.cloud/library/charts
-  CHART_REPO_HOST: junhyung.cloud/library/charts
+  CHART_REPO: oci://junhyung.cloud/mc-agents/charts
+  CHART_REPO_HOST: junhyung.cloud/mc-agents/charts
+  # The node image k3d 5.9.0 creates its clusters from, which the README names as the k3s verified
+  # against, through the registry's proxy cache of Docker Hub: the runners share addresses and
+  # Docker Hub throttles anonymous pulls per address. The Makefile stays on Docker Hub, so a laptop
+  # needs no login.
+  K3S_IMAGE: junhyung.cloud/docker-hub/rancher/k3s:v1.35.5-k3s1
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      # Whether anything the image or the chart is built from changed. A docs-only push leaves
+      # both alone, so :<version> keeps pointing at the build that was tested with it.
+      shipped: ${{ steps.check.outputs.shipped }}
+      # The release before this one, which the upgrade verification installs first.
+      previous: ${{ steps.previous.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,9 +45,13 @@ jobs:
       # the base branch is the version comparison; on a push it is the commit that was replaced. A
       # force push leaves nothing to compare against, so BASE stays empty and only the consistency
       # half of the version check runs.
-      - run: make check
+      - id: check
+        run: make check
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (!github.event.forced && github.event.before) || '' }}
+
+      - id: previous
+        run: echo "version=$(bash hack/previous-version.sh)" >> "$GITHUB_OUTPUT"
 
       # Advisory of the day it runs, so it stays out of make check: a vulnerability published
       # overnight should fail the next push, not the one that was already green.
@@ -46,16 +61,30 @@ jobs:
   # run on a cluster. The same script a laptop runs, against the same kind of cluster.
   verify:
     needs: check
+    if: needs.check.outputs.shipped != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      # The proxy cache is a private project, so the pull needs the Harbor robot. A pull request
+      # Dependabot opens runs without the repository's secrets; the same two names are set as
+      # Dependabot secrets by the owner, so the login works there too.
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      # k3d asks the Docker daemon to pull the node image with no credentials of its own, so the
+      # pull is made here, where the login applies, and k3d finds the image already present.
+      - run: docker pull --quiet "$K3S_IMAGE"
+
       # The action's own default is a k3d from 2022. This is the k3d a laptop runs, and with it the
       # k3s the README names as the version verified against.
       - uses: AbsaOSS/k3d-action@v2
         with:
           cluster-name: ci
           k3d-version: v5.9.0
-          args: --agents 1 --wait
+          args: --agents 1 --wait --image ${{ env.K3S_IMAGE }}
 
       - run: make k3d-deploy k3d-verify K3D_CLUSTER=ci
 
@@ -73,17 +102,71 @@ jobs:
           name: verify-failure
           path: verify-failure
 
+  # What an existing install meets: the published release before this one, with bots, a pool and an
+  # MCPServer under it, replaced by the source chart. The objects have to be the same objects after,
+  # and the new operator has to reconcile them. Helm on the runner is Helm 3, which applies
+  # client-side; the script takes the Helm 4 steps only where it finds Helm 4.
+  verify-upgrade:
+    name: verify-upgrade (from ${{ matrix.from }})
+    needs: check
+    if: needs.check.outputs.shipped != 'false'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 0.12 is the last release whose CRDs came from the chart's crds/ directory, so it is the
+        # row that exercises the adoption the README documents; its chart was published under the
+        # stamped tag only. The other row is the release this one replaces.
+        from:
+          - ${{ needs.check.outputs.previous }}
+          - 0.12.0-20260916095130.gdccf990b
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - run: docker pull --quiet "$K3S_IMAGE"
+
+      - uses: AbsaOSS/k3d-action@v2
+        with:
+          cluster-name: ci
+          k3d-version: v5.9.0
+          args: --agents 1 --wait --image ${{ env.K3S_IMAGE }}
+
+      - run: make k3d-verify-upgrade K3D_CLUSTER=ci FROM=${{ matrix.from }}
+
+      - name: collect the cluster's side of the story
+        if: failure()
+        run: |
+          mkdir -p verify-failure
+          kubectl --context k3d-ci get events -A --sort-by=.lastTimestamp > verify-failure/events.txt || true
+          kubectl --context k3d-ci -n mc-agents-system logs deploy/mc-agents-operator --all-containers > verify-failure/operator.log || true
+          kubectl --context k3d-ci get minecraftbots,minecraftbotpools,mcpservers -A -o yaml > verify-failure/objects.yaml || true
+          kubectl --context k3d-ci get pods -A -o wide > verify-failure/pods.txt || true
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: verify-upgrade-failure-${{ matrix.from }}
+          path: verify-failure
+
   publish:
-    needs: [check, verify]
-    if: github.event_name != 'pull_request'
+    needs: [check, verify, verify-upgrade]
+    if: github.event_name != 'pull_request' && needs.check.outputs.shipped != 'false'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # write for the git tag and the release, and in this job alone.
+      contents: write
       # Harbor takes a robot account, so the credentials are repository secrets. cosign
       # stays keyless: the certificate comes from Fulcio and no key lives here either.
       id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The release notes are the commits since the previous tag.
+          fetch-depth: 0
 
       - id: tag
         run: |
@@ -142,6 +225,43 @@ jobs:
           digest=$(grep -o 'sha256:[0-9a-f]\{64\}' push.log | head -1)
           test -n "$digest"
           cosign sign --yes "$CHART_REPO_HOST/mc-agents-operator@$digest"
+
+      # The image tags map the version to a build; this maps it to a commit, which is what a
+      # bisect or a diff between two releases needs. A tag that is already there is left where it
+      # is: a re-run of this job must not say a different commit shipped the version. The notes
+      # are the commits since the previous tag, and what the release was verified with, since the
+      # operator is what installs that set.
+      - name: tag and release
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            git tag "v$VERSION" "$GITHUB_SHA"
+            git push origin "v$VERSION"
+          fi
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            exit 0
+          fi
+          # The first release this step makes has no tag before it, so the notes start where the
+          # previous version did.
+          since=$(git describe --tags --abbrev=0 "v$VERSION^" 2>/dev/null || true)
+          if [ -z "$since" ]; then
+            previous=$(bash hack/previous-version.sh)
+            since=$(git log --format=%H -- VERSION | while read -r commit; do
+              if [ "$(git show "$commit:VERSION" | tr -d '[:space:]')" = "$previous" ]; then echo "$commit"; break; fi
+            done)
+          fi
+          # yq is on the runner image.
+          pin() { yq "$1" charts/mc-agents-operator/values.yaml; }
+          {
+            git log "${since:+$since..}v$VERSION" --format='- %s'
+            echo
+            echo "Verified with mcp-server $(pin .mcpServer.tag), bot-fabric $(pin .bots.fabricTag)," \
+              "bot-azalea $(pin .bots.azaleaTag), mc-assets $(pin '.bots.assetFetcherImage | split(":") | .[-1]')." \
+              "The row for this release is in docs/compatibility.md, with the order the four ship in."
+          } > release-notes.md
+          gh release create "v$VERSION" --title "v$VERSION" --notes-file release-notes.md
 
       - run: |
           {

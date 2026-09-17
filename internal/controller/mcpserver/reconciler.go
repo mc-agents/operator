@@ -1,5 +1,5 @@
 // Package mcpserver reconciles an MCPServer into the Deployment, Services, NetworkPolicy,
-// ServiceAccount, RBAC and token that run one MCP server in the tenant's own namespace.
+// ServiceAccount, RBAC and tokens that run one MCP server in the tenant's own namespace.
 package mcpserver
 
 import (
@@ -95,7 +95,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.ensureToken(ctx, server); err != nil {
+	if server.Spec.Auth.ExistingSecret == "" {
+		if err := r.ensureSecret(ctx, server, mcpserverspec.GeneratedSecretName(server), mcpserverspec.GeneratedSecret); err != nil {
+			return ctrl.Result{}, r.fail(ctx, server, "TokenFailed", err)
+		}
+	}
+	if err := r.ensureSecret(ctx, server, mcpserverspec.LinkSecretName(server), mcpserverspec.LinkSecret); err != nil {
 		return ctrl.Result{}, r.fail(ctx, server, "TokenFailed", err)
 	}
 
@@ -131,13 +136,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{}, r.writeStatus(ctx, server, readyCondition(server, &live, pods.Items))
 }
 
-// ensureToken creates the generated Secret when it is missing and leaves it alone when it is not. An
-// existing token is one an agent may already hold.
-func (r *Reconciler) ensureToken(ctx context.Context, server *v1alpha1.MCPServer) error {
-	if server.Spec.Auth.ExistingSecret != "" {
-		return nil
-	}
-	name := mcpserverspec.GeneratedSecretName(server)
+// ensureSecret creates a generated Secret when it is missing and leaves it alone when it is not. An
+// existing token is one an agent, or a running bot, may already hold.
+func (r *Reconciler) ensureSecret(ctx context.Context, server *v1alpha1.MCPServer, name string, build func(*v1alpha1.MCPServer, string) *corev1.Secret) error {
 	var existing corev1.Secret
 	err := r.apiReader.Get(ctx, client.ObjectKey{Namespace: server.Namespace, Name: name}, &existing)
 	if err == nil {
@@ -150,7 +151,7 @@ func (r *Reconciler) ensureToken(ctx context.Context, server *v1alpha1.MCPServer
 	if err != nil {
 		return fmt.Errorf("generate token: %w", err)
 	}
-	if err := r.client.Create(ctx, mcpserverspec.GeneratedSecret(server, token)); err != nil && !apierrors.IsAlreadyExists(err) {
+	if err := r.client.Create(ctx, build(server, token)); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create secret %s: %w", name, err)
 	}
 	r.recorder.Eventf(server, corev1.EventTypeNormal, reasonTokenCreated, "created token secret %s", name)

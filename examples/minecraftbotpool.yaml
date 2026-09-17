@@ -14,3 +14,6 @@ spec:
       server:
         host: mc-agents-mcp-server-bots.game.svc
         port: 8765
+      # Every bot of the pool presents the same token, as every bot of the namespace does.
+      linkTokenSecretRef:
+        name: mc-agents-mcp-server-link

@@ -8,17 +8,19 @@ CMD := mc-agents-operator
 VERSION ?= $(shell cat VERSION)
 
 CHART := charts/mc-agents-operator
-IMAGE ?= junhyung.cloud/library/operator
+IMAGE ?= junhyung.cloud/mc-agents/operator
 K3D_IMAGE := mc-agents/operator:dev
 
 # A dedicated cluster. hyperfarm-local is shared with other sessions and has already lost work
 # to a concurrent deploy, so this refuses to touch it.
 K3D_CLUSTER ?= mc-agents
 K3D_CONTEXT := k3d-$(K3D_CLUSTER)
-HELM_FORCE_CONFLICTS := $(shell helm upgrade --help 2>/dev/null | grep -q -- --force-conflicts && echo --force-conflicts)
 NAMESPACE ?= mc-agents-system
 # Where the verify run puts its MCPServer, profiles and bots: a tenant, never the operator's own.
 TENANT ?= mc-agents-verify
+# The published release the upgrade verification starts from: the newest VERSION below this one
+# in the history, unless given.
+FROM ?= $(shell bash hack/previous-version.sh)
 
 .PHONY: all
 all: build
@@ -108,33 +110,33 @@ k3d-up: k3d-guard ## Create the dedicated k3d cluster.
 k3d-down: k3d-guard ## Delete the dedicated k3d cluster.
 	k3d cluster delete $(K3D_CLUSTER)
 
-.PHONY: k3d-deploy
-k3d-deploy: k3d-guard image ## Build, import and install the operator into the k3d cluster.
+.PHONY: k3d-import
+k3d-import: k3d-guard image
 	k3d image import $(K3D_IMAGE) -c $(K3D_CLUSTER)
-	# Helm 4 applies server-side, and a CRD that kubectl applied before 0.13 has kubectl as the
-	# field manager of its schema; taking it over is the point of the upgrade. Helm 3 applies
-	# client-side and has no such flag.
-	helm --kube-context $(K3D_CONTEXT) upgrade --install mc-agents-operator $(CHART) \
-		--namespace $(NAMESPACE) --create-namespace \
-		--set image.registry=mc-agents \
-		--set image.repository=operator \
-		--set image.tag=dev \
-		--set image.pullPolicy=Never \
-		$(HELM_FORCE_CONFLICTS) \
-		--wait
-	# The dev tag never changes, so the pod spec is identical and helm would leave the old
-	# image running. Restart explicitly or the next verify run tests the previous build.
-	kubectl --context $(K3D_CONTEXT) -n $(NAMESPACE) rollout restart deploy/mc-agents-operator
-	kubectl --context $(K3D_CONTEXT) -n $(NAMESPACE) rollout status deploy/mc-agents-operator
+
+.PHONY: k3d-deploy
+k3d-deploy: k3d-import ## Build, import and install the operator into the k3d cluster.
+	bash hack/k3d-install.sh $(K3D_CONTEXT) $(NAMESPACE)
 
 .PHONY: k3d-verify
-k3d-verify: k3d-guard ## Apply the examples in a tenant namespace and assert the operator reconciles them.
+k3d-verify: k3d-guard ## Apply the fixtures in a tenant namespace and assert the operator reconciles them.
 	kubectl --context $(K3D_CONTEXT) get namespace $(TENANT) >/dev/null 2>&1 || \
 		kubectl --context $(K3D_CONTEXT) create namespace $(TENANT)
 	bash hack/verify-k3d.sh $(K3D_CONTEXT) $(TENANT)
 
+# On a cluster with no operator yet: the published chart FROM is installed first, and the point is
+# what happens to its objects when the source chart replaces it.
+.PHONY: k3d-verify-upgrade
+k3d-verify-upgrade: k3d-import ## Install the published release FROM, then upgrade to the source and assert the objects survive.
+	kubectl --context $(K3D_CONTEXT) get namespace $(TENANT) >/dev/null 2>&1 || \
+		kubectl --context $(K3D_CONTEXT) create namespace $(TENANT)
+	bash hack/verify-k3d.sh --from $(FROM) $(K3D_CONTEXT) $(TENANT)
+
 .PHONY: verify
 verify: k3d-up k3d-deploy k3d-verify ## Full loop: cluster, install, reconcile check.
+
+.PHONY: verify-upgrade
+verify-upgrade: k3d-up k3d-verify-upgrade ## Full loop: cluster, published release FROM, upgrade, survival check.
 
 ##@ Help
 

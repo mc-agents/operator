@@ -1254,7 +1254,7 @@ spec:
                 type: array
                 x-kubernetes-validations:
                 - message: env names the operator sets are reserved
-                  rule: '!self.exists(e, e.name in [''MCP_SERVER_HOST'',''MCP_SERVER_PORT'',''BOT_NAME'',''BOT_KIND'',''MC_VERSION'',''HEALTH_PORT'',''BOT_WORK_DIR'',''MC_ASSETS_DIR'',''BOT_RENDER'',''BOT_RENDER_WIDTH'',''BOT_RENDER_HEIGHT'',''BOT_FRAME_RATE_LIMIT'',''POD_NAME'',''POD_NAMESPACE'',''NODE_NAME''])'
+                  rule: '!self.exists(e, e.name in [''MCP_SERVER_HOST'',''MCP_SERVER_PORT'',''BOT_LINK_TOKEN'',''BOT_NAME'',''BOT_KIND'',''MC_VERSION'',''HEALTH_PORT'',''BOT_WORK_DIR'',''MC_ASSETS_DIR'',''BOT_RENDER'',''BOT_RENDER_WIDTH'',''BOT_RENDER_HEIGHT'',''BOT_FRAME_RATE_LIMIT'',''POD_NAME'',''POD_NAMESPACE'',''NODE_NAME''])'
               image:
                 description: Overrides the image the profiles and flags would build.
                 properties:
@@ -1301,6 +1301,22 @@ spec:
                 - fabric
                 - azalea
                 type: string
+              linkTokenSecretRef:
+                description: |-
+                  The Secret holding the token the bot presents in hello, handed to the pod as BOT_LINK_TOKEN.
+                  Empty sends none, which an MCP server with a token configured refuses.
+                properties:
+                  key:
+                    default: token
+                    description: The key in that Secret holding the token.
+                    type: string
+                  name:
+                    description: Name of the Secret in the bot's namespace.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               minecraftVersion:
                 description: |-
                   Minecraft version the bot claims and the image is built for, appended to the image tag as

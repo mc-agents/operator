@@ -8,7 +8,7 @@ import (
 )
 
 func TestResolve(t *testing.T) {
-	resolver := botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Fabric: "0.2.0", Azalea: "0.4.0"})
+	resolver := botimage.NewResolver("junhyung.cloud/mc-agents", botimage.Tags{Fabric: "0.2.0", Azalea: "0.4.0"})
 
 	cases := []struct {
 		name string
@@ -18,12 +18,12 @@ func TestResolve(t *testing.T) {
 		{
 			name: "azalea pins the minecraft version in the tag",
 			spec: v1alpha1.MinecraftBotSpec{Kind: v1alpha1.BotKindAzalea, MinecraftVersion: "26.1.2"},
-			want: "junhyung.cloud/library/bot-azalea:0.4.0-mc26.1.2",
+			want: "junhyung.cloud/mc-agents/bot-azalea:0.4.0-mc26.1.2",
 		},
 		{
 			name: "fabric pins the minecraft version in the tag",
 			spec: v1alpha1.MinecraftBotSpec{Kind: v1alpha1.BotKindFabric, MinecraftVersion: "26.1.2"},
-			want: "junhyung.cloud/library/bot-fabric:0.2.0-mc26.1.2",
+			want: "junhyung.cloud/mc-agents/bot-fabric:0.2.0-mc26.1.2",
 		},
 		{
 			name: "an explicit tag wins over the version suffix",
@@ -32,7 +32,7 @@ func TestResolve(t *testing.T) {
 				MinecraftVersion: "26.1.2",
 				Image:            v1alpha1.ImageOverride{Tag: "pr-42"},
 			},
-			want: "junhyung.cloud/library/bot-fabric:pr-42",
+			want: "junhyung.cloud/mc-agents/bot-fabric:pr-42",
 		},
 		{
 			name: "a repository that already carries a tag is left alone",
@@ -49,10 +49,10 @@ func TestResolve(t *testing.T) {
 				Kind:             v1alpha1.BotKindFabric,
 				MinecraftVersion: "26.1.2",
 				Image: v1alpha1.ImageOverride{
-					Repository: "junhyung.cloud/library/bot-fabric@sha256:" + zeros(64),
+					Repository: "junhyung.cloud/mc-agents/bot-fabric@sha256:" + zeros(64),
 				},
 			},
-			want: "junhyung.cloud/library/bot-fabric@sha256:" + zeros(64),
+			want: "junhyung.cloud/mc-agents/bot-fabric@sha256:" + zeros(64),
 		},
 	}
 
@@ -70,7 +70,7 @@ func TestResolve(t *testing.T) {
 }
 
 func TestResolveTakesTheProfileBeforeTheFlags(t *testing.T) {
-	resolver := botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Fabric: "0.2.0", Azalea: "0.4.0"})
+	resolver := botimage.NewResolver("junhyung.cloud/mc-agents", botimage.Tags{Fabric: "0.2.0", Azalea: "0.4.0"})
 	profile := &v1alpha1.BotProfileSpec{
 		Registry: "registry.local/mirror/",
 		Azalea:   v1alpha1.AzaleaProfile{Tag: "0.16.0"},

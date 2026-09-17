@@ -32,7 +32,7 @@ func TestObserve(t *testing.T) {
 				Name: "bot",
 				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
 					Reason:  "ImagePullBackOff",
-					Message: `Back-off pulling image "junhyung.cloud/library/bot-fabric:0.2.0-mc26.1.2"`,
+					Message: `Back-off pulling image "junhyung.cloud/mc-agents/bot-fabric:0.2.0-mc26.1.2"`,
 				}},
 			}),
 			phase:    v1alpha1.BotPhaseFailed,

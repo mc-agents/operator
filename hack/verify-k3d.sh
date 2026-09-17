@@ -1,12 +1,50 @@
 #!/usr/bin/env bash
+# verify-k3d.sh [--from <version>] <kube context> <tenant namespace>
+#
+# Without --from: the operator is installed, and every fixture is driven through what the operator
+# promises about it. With --from: the published release of that version is installed first, the
+# fixtures are applied under it, the source chart replaces it, and the objects have to survive and
+# reconcile; the cluster must hold no operator yet.
 set -o errexit -o nounset -o pipefail
 
+FROM=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+	--from)
+		FROM="${2:?--from needs a version}"
+		shift 2
+		;;
+	--from=*)
+		FROM="${1#--from=}"
+		shift
+		;;
+	-*)
+		echo "unknown option $1" >&2
+		exit 2
+		;;
+	*) break ;;
+	esac
+done
 CONTEXT="${1:?kube context}"
 NAMESPACE="${2:?namespace}"
 ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")"
 # Objects only this script has a use for: profiles whose tags are labels rather than images, a
 # bot with nowhere to dial, an MCPServer on the generated-token path. examples/ is for people.
 FIXTURES="${ROOT}/hack/testdata"
+# Where the operator itself runs; the tenant namespace above is where its objects go.
+OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-mc-agents-system}"
+CRDS=(clusterminecraftbotprofiles mcpservers minecraftbotpools minecraftbotprofiles minecraftbots)
+
+# Where a published chart is. Releases before 0.14.0 went to the registry's library project; from
+# 0.14.0 every mc-agents artifact is under a project of its own, and the old ones were left where
+# they are rather than copied, so an upgrade from one of them starts there.
+chart_repo() {
+	if [[ "$(printf '%s\n%s\n' "$1" 0.14.0 | sort -V | head -1)" != 0.14.0 ]]; then
+		echo oci://junhyung.cloud/library/charts/mc-agents-operator
+	else
+		echo oci://junhyung.cloud/mc-agents/charts/mc-agents-operator
+	fi
+}
 
 k() { kubectl --context "${CONTEXT}" -n "${NAMESPACE}" "$@"; }
 
@@ -64,6 +102,149 @@ refused() {
 	fi
 	echo "ok: ${what} is refused: ${message}"
 }
+
+# The MCP endpoint over Streamable HTTP, through a port-forward from this machine rather than a
+# curl pod: the runner has curl and python3, and a pod would be one more image to pull. The local
+# port is whatever is free: a developer's machine already forwards a server of its own on the
+# obvious number.
+MCP_LOCAL_PORT="${MCP_LOCAL_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}"
+MCP_BASE="http://127.0.0.1:${MCP_LOCAL_PORT}/mcp"
+mcp_token=""
+mcp_session=""
+
+mcp_post() {
+	curl -sS -X POST "${MCP_BASE}" \
+		-H "Authorization: Bearer ${mcp_token}" \
+		-H 'Content-Type: application/json' \
+		-H 'Accept: application/json, text/event-stream' \
+		${mcp_session:+-H "mcp-session-id: ${mcp_session}"} \
+		-d "$1"
+}
+
+mcp_open() {
+	mcp_token="$(k get secret mc-agents-mcp-server-auth -o jsonpath='{.data.token}' | base64 -d)"
+	mcp_session="$(curl -sS -i -X POST "${MCP_BASE}" \
+		-H "Authorization: Bearer ${mcp_token}" \
+		-H 'Content-Type: application/json' \
+		-H 'Accept: application/json, text/event-stream' \
+		-d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify-k3d","version":"0"}}}' |
+		tr -d '\r' | grep -i '^mcp-session-id:' | head -1 | sed 's/^[^:]*: *//' || true)"
+	if [[ -z "${mcp_session}" ]]; then
+		echo "initialize returned no session id" >&2
+		return 1
+	fi
+	mcp_post '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null
+	echo "ok: an MCP session is open with the token from the Secret"
+}
+
+# mcp_call <tool> <json arguments>: prints the text the tool answered with. Exit 1 when the tool
+# said it failed, 2 when the call itself did; a caller that expects a failure tests the text.
+mcp_call() {
+	mcp_post "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" |
+		python3 -c '
+import json, sys
+raw = sys.stdin.read()
+# The answer comes as one JSON body or as SSE events; a progress notification may precede the result.
+events = [line[5:] for line in raw.splitlines() if line.startswith("data:")] or [raw]
+answer = next((json.loads(e) for e in events if json.loads(e).get("id") == 2), None)
+if answer is None or "result" not in answer:
+    print("rpc: " + json.dumps(answer if answer is not None else raw)[:500])
+    sys.exit(2)
+result = answer["result"]
+print("".join(c.get("text", "") for c in result.get("content", [])))
+sys.exit(1 if result.get("isError") else 0)
+'
+}
+
+requested_by_server() { k get minecraftbots -l mc-agents.junhyung.cloud/requested-by=mcp-server --no-headers 2>/dev/null; }
+
+crd_is_helms() { [[ "$(kubectl --context "${CONTEXT}" get crd "$1.mc-agents.junhyung.cloud" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}')" == Helm ]]; }
+
+# Install the published release FROM, put the fixtures under it, replace it with the source chart
+# and assert nothing was lost on the way. The full loop below runs on a cluster that already has
+# the source chart; this one has to start from the release.
+verify_upgrade() {
+	local helm=(helm --kube-context "${CONTEXT}")
+
+	echo "== installing the published release ${FROM}"
+	if "${helm[@]}" status mc-agents-operator -n "${OPERATOR_NAMESPACE}" >/dev/null 2>&1; then
+		echo "release mc-agents-operator already exists in ${OPERATOR_NAMESPACE}; the upgrade has to start from ${FROM} (make k3d-down first)" >&2
+		return 1
+	fi
+	"${helm[@]}" install mc-agents-operator "$(chart_repo "${FROM}")" --version "${FROM}" \
+		--namespace "${OPERATOR_NAMESPACE}" --create-namespace --wait
+
+	echo "== the release reconciles the fixtures"
+	# Not the profiles: their tags are labels, not images, and a bot built from one cannot run.
+	k apply -f "${FIXTURES}/minecraftbot.yaml"
+	k apply -f "${FIXTURES}/minecraftbotpool.yaml"
+	k apply -f "${FIXTURES}/mcpserver.yaml"
+	await "the pool has three bots" 60 count_is scouts 3
+	await_running scout 180
+	await "deployment/mc-agents-mcp-server exists" 60 k get deployment mc-agents-mcp-server
+	await "the token secret exists" 30 k get secret mc-agents-mcp-server-auth
+	local bot_uid pool_uid server_uid token_uid pod_uid
+	bot_uid="$(field minecraftbot scout .metadata.uid)"
+	pool_uid="$(field minecraftbotpool scouts .metadata.uid)"
+	server_uid="$(field mcpserver mc-agents .metadata.uid)"
+	token_uid="$(field secret mc-agents-mcp-server-auth .metadata.uid)"
+	pod_uid="$(field pod scout .metadata.uid)"
+
+	# Before 0.13 the CRDs came from the chart's crds/ directory, which Helm installs once and never
+	# owns. 0.13 renders them from templates, and Helm refuses an object that does not say it belongs
+	# to the release; this is the step the README documents under "Upgrading from 0.12".
+	local crd
+	if [[ "$(printf '%s\n%s\n' "${FROM}" 0.13.0 | sort -V | head -1)" != 0.13.0 ]]; then
+		echo "== adopting the CRDs the release ${FROM} left outside the release"
+		for crd in "${CRDS[@]}"; do
+			kubectl --context "${CONTEXT}" label crd "${crd}.mc-agents.junhyung.cloud" app.kubernetes.io/managed-by=Helm --overwrite
+			kubectl --context "${CONTEXT}" annotate crd "${crd}.mc-agents.junhyung.cloud" \
+				meta.helm.sh/release-name=mc-agents-operator \
+				meta.helm.sh/release-namespace="${OPERATOR_NAMESPACE}" --overwrite
+		done
+	fi
+
+	echo "== upgrading to the source chart"
+	bash "${ROOT}/hack/k3d-install.sh" "${CONTEXT}" "${OPERATOR_NAMESPACE}"
+
+	echo "== the objects survived"
+	for crd in "${CRDS[@]}"; do
+		await "crd/${crd} belongs to the release" 30 crd_is_helms "${crd}"
+	done
+	equals minecraftbot scout .metadata.uid "${bot_uid}" || { echo "minecraftbot/scout was replaced" >&2; return 1; }
+	equals minecraftbotpool scouts .metadata.uid "${pool_uid}" || { echo "minecraftbotpool/scouts was replaced" >&2; return 1; }
+	equals mcpserver mc-agents .metadata.uid "${server_uid}" || { echo "mcpserver/mc-agents was replaced" >&2; return 1; }
+	equals secret mc-agents-mcp-server-auth .metadata.uid "${token_uid}" || { echo "the token secret was replaced; agents holding it are cut off" >&2; return 1; }
+	echo "ok: the bot, the pool, the MCPServer and its token are the objects they were"
+
+	echo "== the new operator reconciles them"
+	await "the pool still has three bots" 60 count_is scouts 3
+	await_running scout 180
+	# A pod that still matches the spec is left alone; one that does not is replaced, and either
+	# way the bot has to be Running again. What must not happen is a pod gone and nothing after it.
+	if [[ "$(field pod scout .metadata.uid)" == "${pod_uid}" ]]; then
+		echo "ok: pod/scout was left running through the upgrade"
+	else
+		echo "ok: pod/scout was replaced by the new operator and is Running again"
+	fi
+	# What only the new operator does to an MCPServer it inherited.
+	await "the link secret exists" 60 k get secret mc-agents-mcp-server-link
+	await "the server Deployment carries the link token" 60 \
+		contains deployment mc-agents-mcp-server '.spec.template.spec.containers[0].env[*].name' BOT_LINK_TOKEN
+	await "mcpserver/mc-agents is Ready" 240 \
+		equals mcpserver mc-agents '.status.conditions[?(@.type=="Ready")].status' True
+
+	echo "== cleaning up"
+	k delete mcpserver mc-agents --wait=true
+	k delete minecraftbotpool scouts --wait=true
+	k delete minecraftbot scout --wait=true
+	echo "all upgrade checks passed"
+}
+
+if [[ -n "${FROM}" ]]; then
+	verify_upgrade
+	exit 0
+fi
 
 echo "== the schema refuses what the operator could not make work"
 refused "a pool template with a botName" "botName is per bot" "$(cat <<'EOF'
@@ -246,6 +427,78 @@ await "a new token secret exists" 60 token_replaced
 k rollout status deployment/mc-agents-mcp-server --timeout=240s
 await "mcpserver/mc-agents is Ready with the new token" 60 \
 	equals mcpserver mc-agents '.status.conditions[?(@.type=="Ready")].status' True
+
+echo "== a bot declared by hand links with the server's token"
+await "the link secret exists" 30 k get secret mc-agents-mcp-server-link
+# The bots Service in this namespace, and the link Secret the server was handed: the pod gets the
+# token from it, and the policy admits the pod because it is in the server's own namespace.
+k apply -f - <<EOF
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MinecraftBot
+metadata:
+  name: linked
+spec:
+  kind: azalea
+  minecraftVersion: "26.1.2"
+  server:
+    host: mc-agents-mcp-server-bots.${NAMESPACE}.svc
+  linkTokenSecretRef:
+    name: mc-agents-mcp-server-link
+EOF
+await "minecraftbot/linked is Linked" 180 equals minecraftbot linked .status.link Linked
+
+echo "== the server names it, starts a bot on request and takes that bot back"
+k port-forward service/mc-agents-mcp-server "${MCP_LOCAL_PORT}:3000" >/dev/null 2>&1 &
+forward_pid=$!
+trap 'kill "${forward_pid}" 2>/dev/null || true' EXIT
+await "the MCP port is forwarded to :${MCP_LOCAL_PORT}" 30 curl -sf -o /dev/null "http://127.0.0.1:${MCP_LOCAL_PORT}/actuator/health/liveness"
+mcp_open
+listed="$(mcp_call list-bots '{}')" || {
+	echo "list-bots failed: ${listed}" >&2
+	exit 1
+}
+if [[ "${listed}" != *"linked (azalea)"* ]]; then
+	echo "list-bots does not name the bot that linked: ${listed}" >&2
+	exit 1
+fi
+echo "ok: list-bots names linked"
+# join-server asks the operator for a bot, waits for its hello, and only then sends it to the game
+# server. A host that does not resolve fails the second half, so the failure has to say the bot
+# linked and the server refused it; one that never linked would say so, and would have been given
+# back before this could look at it. A join that says the bot is still starting is not a failure:
+# the same call waits for the same bot.
+joined=""
+for _ in 1 2 3 4 5 6; do
+	if joined="$(mcp_call join-server '{"bot":"probe","kind":"azalea","host":"nowhere.invalid","port":25565,"timeoutMs":20000}')"; then
+		echo "join-server succeeded against a host that does not resolve: ${joined}" >&2
+		exit 1
+	fi
+	[[ "${joined}" == *"still starting"* ]] || break
+	sleep 5
+done
+if [[ "${joined}" != *"did not accept the connection"* || "${joined}" != *"could not join nowhere.invalid"* ]]; then
+	echo "join-server failed for another reason than the game server: ${joined}" >&2
+	exit 1
+fi
+echo "ok: join-server linked the bot and the game server refused it"
+if [[ "$(requested_by_server | wc -l | tr -d ' ')" != 1 ]]; then
+	echo "want one MinecraftBot labelled requested-by=mcp-server, have: $(requested_by_server)" >&2
+	exit 1
+fi
+echo "ok: a MinecraftBot labelled mc-agents.junhyung.cloud/requested-by=mcp-server appeared"
+left="$(mcp_call leave-server '{"bot":"probe"}')" || {
+	echo "leave-server failed: ${left}" >&2
+	exit 1
+}
+if [[ "${left}" != *"given back"* ]]; then
+	echo "leave-server did not give the bot back: ${left}" >&2
+	exit 1
+fi
+given_back() { [[ -z "$(requested_by_server)" ]]; }
+await "the bot join-server asked for is deleted" 60 given_back
+kill "${forward_pid}" 2>/dev/null || true
+trap - EXIT
+k delete minecraftbot linked --wait=true
 
 echo "== deleting the MCPServer takes its objects"
 k delete mcpserver mc-agents --wait=true

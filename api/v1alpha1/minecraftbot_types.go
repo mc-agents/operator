@@ -84,6 +84,21 @@ type MCPServerRef struct {
 	Port int32 `json:"port,omitempty"`
 }
 
+// LinkTokenSecretRef names the Secret a bot presents in its hello, so that a pod which gets past
+// the NetworkPolicy still cannot pass itself off as a bot. For an operator-managed MCPServer it is
+// <name>-mcp-server-link, which join-server writes into every bot it creates.
+type LinkTokenSecretRef struct {
+	// Name of the Secret in the bot's namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// The key in that Secret holding the token.
+	// +optional
+	// +kubebuilder:default=token
+	Key string `json:"key,omitempty"`
+}
+
 // ImageOverride replaces the image the profiles and flags would build. A repository that already
 // carries a tag or a digest is used verbatim.
 type ImageOverride struct {
@@ -188,6 +203,11 @@ type MinecraftBotSpec struct {
 	// +kubebuilder:validation:Required
 	Server MCPServerRef `json:"server"`
 
+	// The Secret holding the token the bot presents in hello, handed to the pod as BOT_LINK_TOKEN.
+	// Empty sends none, which an MCP server with a token configured refuses.
+	// +optional
+	LinkTokenSecretRef *LinkTokenSecretRef `json:"linkTokenSecretRef,omitempty"`
+
 	// The name the bot reports in hello and agents address it by; empty uses the CR name
 	// truncated to 16 characters. Pool bots must leave it empty and are named <pool>-<ordinal>.
 	// +optional
@@ -230,7 +250,7 @@ type MinecraftBotSpec struct {
 	// reserved, since a later entry would silently win.
 	// +optional
 	// +kubebuilder:validation:MaxItems=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(e, e.name in ['MCP_SERVER_HOST','MCP_SERVER_PORT','BOT_NAME','BOT_KIND','MC_VERSION','HEALTH_PORT','BOT_WORK_DIR','MC_ASSETS_DIR','BOT_RENDER','BOT_RENDER_WIDTH','BOT_RENDER_HEIGHT','BOT_FRAME_RATE_LIMIT','POD_NAME','POD_NAMESPACE','NODE_NAME'])",message="env names the operator sets are reserved"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(e, e.name in ['MCP_SERVER_HOST','MCP_SERVER_PORT','BOT_LINK_TOKEN','BOT_NAME','BOT_KIND','MC_VERSION','HEALTH_PORT','BOT_WORK_DIR','MC_ASSETS_DIR','BOT_RENDER','BOT_RENDER_WIDTH','BOT_RENDER_HEIGHT','BOT_FRAME_RATE_LIMIT','POD_NAME','POD_NAMESPACE','NODE_NAME'])",message="env names the operator sets are reserved"
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// Goes onto the pod as written; empty takes the profile's.

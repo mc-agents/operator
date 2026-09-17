@@ -8,9 +8,9 @@ metadata:
 spec:
   fabric:
     # Bot releases, without the Minecraft version; -mc<minecraftVersion> is appended.
-    tag: "0.69.1"
+    tag: "0.70.0"
   azalea:
-    tag: "0.21.1"
+    tag: "0.22.0"
     resources:
       limits:
         memory: 512Mi

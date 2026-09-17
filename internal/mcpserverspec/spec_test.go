@@ -26,8 +26,8 @@ func TestTheNetworkPolicyGatesTheBotPortAndLeavesTheMCPPortToTheToken(t *testing
 		t.Fatalf("the first rule is not the bot-link gate: %+v", bots)
 	}
 	from := bots.From[0]
-	if from.NamespaceSelector == nil || len(from.NamespaceSelector.MatchLabels) != 0 {
-		t.Errorf("bots dial in from any namespace, the peer selects %+v", from.NamespaceSelector)
+	if from.NamespaceSelector == nil || from.NamespaceSelector.MatchLabels[corev1.LabelMetadataName] != "game" {
+		t.Errorf("only the server's own namespace may dial the bot port, the peer selects %+v", from.NamespaceSelector)
 	}
 	if from.PodSelector == nil || from.PodSelector.MatchLabels[v1alpha1.LabelName] != v1alpha1.BotPodName {
 		t.Errorf("only bot pods may dial the bot port, the peer selects %+v", from.PodSelector)
@@ -46,6 +46,23 @@ func TestTheServerPodIsLabelledForTheCacheWithoutMovingTheSelector(t *testing.T)
 	}
 	if _, moved := deployment.Spec.Selector.MatchLabels[v1alpha1.LabelManagedBy]; moved {
 		t.Error("the selector is immutable on a Deployment and must stay the two labels it was")
+	}
+}
+
+func TestTheServerIsHandedTheLinkTokenAndTheSecretItLivesIn(t *testing.T) {
+	deployment := mcpserverspec.Deployment(newServer(), mcpserverspec.Defaults{})
+
+	token := envVar(deployment, "BOT_LINK_TOKEN")
+	if token == nil || token.ValueFrom == nil || token.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("BOT_LINK_TOKEN is %+v, want a secretKeyRef", token)
+	}
+	if ref := token.ValueFrom.SecretKeyRef; ref.Name != "mc-agents-mcp-server-link" || ref.Key != "token" {
+		t.Errorf("BOT_LINK_TOKEN comes from %s/%s, want mc-agents-mcp-server-link/token", ref.Name, ref.Key)
+	}
+	// The name, not the value: join-server writes it into every bot it creates as the ref the
+	// operator turns into the same env on the bot's side.
+	if name := envVar(deployment, "MCP_BOTS_LINK_SECRET"); name == nil || name.Value != "mc-agents-mcp-server-link" {
+		t.Errorf("MCP_BOTS_LINK_SECRET is %+v, want the link Secret's name", name)
 	}
 }
 

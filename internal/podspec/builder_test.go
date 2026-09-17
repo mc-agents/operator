@@ -16,8 +16,8 @@ import (
 
 func newBuilder() podspec.Builder {
 	return podspec.NewBuilder(
-		botimage.NewResolver("junhyung.cloud/library", botimage.Tags{Fabric: "0.2.0", Azalea: "0.4.0"}),
-		podspec.Defaults{AssetFetcherImage: "junhyung.cloud/library/mc-assets:0.1.0"},
+		botimage.NewResolver("junhyung.cloud/mc-agents", botimage.Tags{Fabric: "0.2.0", Azalea: "0.4.0"}),
+		podspec.Defaults{AssetFetcherImage: "junhyung.cloud/mc-agents/mc-assets:0.1.0"},
 	)
 }
 
@@ -58,7 +58,7 @@ func TestFabricPodFetchesAssetsIntoAVersionedDirectory(t *testing.T) {
 		t.Fatalf("want one init container, got %d", len(pod.Spec.InitContainers))
 	}
 	init := pod.Spec.InitContainers[0]
-	if init.Image != "junhyung.cloud/library/mc-assets:0.1.0-mc26.1.2" {
+	if init.Image != "junhyung.cloud/mc-agents/mc-assets:0.1.0-mc26.1.2" {
 		t.Fatalf("init container image is %q", init.Image)
 	}
 	if got, want := env(pod, "MC_ASSETS_DIR"), "/mc-assets/26.1.2"; got != want {
@@ -118,6 +118,36 @@ func TestPodCarriesTheLinkContract(t *testing.T) {
 	}
 }
 
+func TestTheLinkTokenComesFromTheSecretTheBotNames(t *testing.T) {
+	builder := newBuilder()
+
+	without, err := builder.Build(newBot(v1alpha1.BotKindAzalea), profile.Resolved{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if envSource(without, "BOT_LINK_TOKEN") != nil || env(without, "BOT_LINK_TOKEN") != "" {
+		t.Fatal("a bot naming no Secret must be handed no BOT_LINK_TOKEN; the server ignores a missing one")
+	}
+
+	bot := newBot(v1alpha1.BotKindAzalea)
+	bot.Spec.LinkTokenSecretRef = &v1alpha1.LinkTokenSecretRef{Name: "mc-agents-mcp-server-link"}
+	pod, err := builder.Build(bot, profile.Resolved{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	source := envSource(pod, "BOT_LINK_TOKEN")
+	if source == nil || source.SecretKeyRef == nil {
+		t.Fatalf("BOT_LINK_TOKEN is not read from a Secret: %+v", source)
+	}
+	// The value stays in the Secret: a pod is what people paste when a bot will not link.
+	if ref := source.SecretKeyRef; ref.Name != "mc-agents-mcp-server-link" || ref.Key != "token" {
+		t.Errorf("BOT_LINK_TOKEN comes from %s/%s, want mc-agents-mcp-server-link/token (the key defaulted)", ref.Name, ref.Key)
+	}
+	if without.Annotations[v1alpha1.AnnotationSpecHash] == pod.Annotations[v1alpha1.AnnotationSpecHash] {
+		t.Error("giving a running bot a link token must replace its pod, or it never presents one")
+	}
+}
+
 func TestSpecHashTracksTheSpec(t *testing.T) {
 	builder := newBuilder()
 
@@ -151,6 +181,15 @@ func env(pod *corev1.Pod, name string) string {
 		}
 	}
 	return ""
+}
+
+func envSource(pod *corev1.Pod, name string) *corev1.EnvVarSource {
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == name {
+			return e.ValueFrom
+		}
+	}
+	return nil
 }
 
 func volume(pod *corev1.Pod, name string) *corev1.VolumeSource {
@@ -251,7 +290,7 @@ func TestBuildFillsWhatTheBotLeavesEmptyFromTheProfile(t *testing.T) {
 	}
 
 	c := pod.Spec.Containers[0]
-	if want := "junhyung.cloud/library/bot-azalea:0.16.0-mc26.1.2"; c.Image != want {
+	if want := "junhyung.cloud/mc-agents/bot-azalea:0.16.0-mc26.1.2"; c.Image != want {
 		t.Fatalf("image got %q, want %q", c.Image, want)
 	}
 	if got := c.Resources.Limits.Memory().String(); got != "512Mi" {

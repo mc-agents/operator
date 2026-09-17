@@ -1,6 +1,7 @@
 package podspec
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"path"
@@ -187,6 +188,17 @@ func containerEnv(bot *v1alpha1.MinecraftBot) []corev1.EnvVar {
 		{Name: "POD_NAME", ValueFrom: fieldRef("metadata.name")},
 		{Name: "POD_NAMESPACE", ValueFrom: fieldRef("metadata.namespace")},
 		{Name: "NODE_NAME", ValueFrom: fieldRef("spec.nodeName")},
+	}
+	if ref := bot.Spec.LinkTokenSecretRef; ref != nil {
+		// From the Secret, never copied into the spec: the pod is what people describe when a bot
+		// will not link, and the token must not be in what they paste.
+		env = append(env, corev1.EnvVar{
+			Name: "BOT_LINK_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+				Key:                  cmp.Or(ref.Key, v1alpha1.DefaultTokenKey),
+			}},
+		})
 	}
 	if bot.Spec.Kind == v1alpha1.BotKindFabric {
 		assets := assetSpec(bot)

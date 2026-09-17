@@ -8,3 +8,5 @@ spec:
   server:
     host: mc-agents-mcp-server-bots.game.svc
     port: 8765
+  linkTokenSecretRef:
+    name: mc-agents-mcp-server-link

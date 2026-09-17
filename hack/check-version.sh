@@ -2,6 +2,11 @@
 # Consistency: VERSION, Chart.version and Chart.appVersion must agree, because the published
 # image tag is built from VERSION and a chart that disagreed would claim a version it was never
 # released as. Monotonicity: with a base revision given, VERSION must have gone up.
+#
+# Under GitHub Actions it also writes shipped=true|false, so the workflow leaves the image, the
+# chart and the tag alone on a push that changed nothing they are built from: a README edit used
+# to move :<version> and the chart to a fresh build of the same code. With no base there is nothing
+# to compare, and publishing is the safe side.
 set -o errexit -o nounset -o pipefail
 
 ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")"
@@ -16,6 +21,12 @@ fail() {
 	exit 1
 }
 
+mark_shipped() {
+	if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+		echo "shipped=$1" >>"${GITHUB_OUTPUT}"
+	fi
+}
+
 [[ -n "${version}" ]] || fail "VERSION is empty"
 [[ "${chart_version}" == "${version}" ]] || fail "Chart.yaml version ${chart_version} != VERSION ${version}"
 [[ "${chart_app_version}" == "${version}" ]] || fail "Chart.yaml appVersion ${chart_app_version} != VERSION ${version}"
@@ -23,11 +34,13 @@ fail() {
 base="${1:-}"
 if [[ -z "${base}" ]]; then
 	echo "version ${version} is consistent"
+	mark_shipped true
 	exit 0
 fi
 
 if ! previous="$(git -C "${ROOT}" show "${base}:VERSION" 2>/dev/null | tr -d '[:space:]')"; then
 	echo "version ${version} is consistent; ${base} has no VERSION to compare against"
+	mark_shipped true
 	exit 0
 fi
 
@@ -41,6 +54,7 @@ fi
 
 if ! printf '%s\n' "${changed}" | grep -Eq "${RELEASE_PATHS}"; then
 	echo "version ${version} is consistent; nothing that ships changed"
+	mark_shipped false
 	exit 0
 fi
 
@@ -49,3 +63,4 @@ highest="$(printf '%s\n%s\n' "${previous}" "${version}" | sort -V | tail -1)"
 [[ "${highest}" == "${version}" ]] || fail "VERSION went down: ${previous} -> ${version}"
 
 echo "version ${previous} -> ${version}"
+mark_shipped true

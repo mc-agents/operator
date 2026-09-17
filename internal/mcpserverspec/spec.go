@@ -24,7 +24,7 @@ const (
 	ContainerName   = "mcp-server"
 	ComponentName   = "mcp-server"
 	BotLinkPort     = 8765
-	DefaultImage    = "junhyung.cloud/library/mcp-server"
+	DefaultImage    = "junhyung.cloud/mc-agents/mcp-server"
 	portMCP         = "mcp"
 	portBotLink     = "bot-link"
 	volumeTmp       = "tmp"
@@ -44,6 +44,12 @@ func Name(server *v1alpha1.MCPServer) string {
 
 func GeneratedSecretName(server *v1alpha1.MCPServer) string {
 	return Name(server) + "-auth"
+}
+
+// LinkSecretName is the Secret bots present in their hello. Separate from the auth token: an agent
+// holds the auth token, and a bot that could read it would hold the MCP port too.
+func LinkSecretName(server *v1alpha1.MCPServer) string {
+	return Name(server) + "-link"
 }
 
 func BotServiceName(server *v1alpha1.MCPServer) string {
@@ -133,9 +139,11 @@ func BotService(server *v1alpha1.MCPServer) *corev1.Service {
 	}
 }
 
-// NetworkPolicy is the gate on the bot-link port: only bot pods, from any namespace, may dial it.
-// The MCP port stays open to everything, since the bearer token is its gate. The kubelet's probes
-// bypass the policy on kube-router, Calico and Cilium alike, so the readiness probe needs no rule.
+// NetworkPolicy is the gate on the bot-link port: only bot pods of the MCPServer's own namespace
+// may dial it. A tenant's bots are made in the tenant's namespace and nowhere else, so a bot pod
+// from another namespace is another tenant's, whatever its label says. The MCP port stays open to
+// everything, since the bearer token is its gate. The kubelet's probes bypass the policy on
+// kube-router, Calico and Cilium alike, so the readiness probe needs no rule.
 func NetworkPolicy(server *v1alpha1.MCPServer) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		TypeMeta:   typeMeta("networking.k8s.io/v1", "NetworkPolicy"),
@@ -147,7 +155,8 @@ func NetworkPolicy(server *v1alpha1.MCPServer) *networkingv1.NetworkPolicy {
 				{
 					Ports: []networkingv1.NetworkPolicyPort{{Protocol: ptr(corev1.ProtocolTCP), Port: ptr(intstr.FromString(portBotLink))}},
 					From: []networkingv1.NetworkPolicyPeer{{
-						NamespaceSelector: &metav1.LabelSelector{},
+						// The label the API server keeps on every namespace since 1.21.
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: server.Namespace}},
 						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{v1alpha1.LabelName: v1alpha1.BotPodName}},
 					}},
 				},
@@ -190,11 +199,21 @@ func RoleBinding(server *v1alpha1.MCPServer) *rbacv1.RoleBinding {
 // token an agent was already given keeps working across every later reconcile.
 func GeneratedSecret(server *v1alpha1.MCPServer, token string) *corev1.Secret {
 	ref := TokenSecret(server)
+	return secret(server, GeneratedSecretName(server), ref.Key, token)
+}
+
+// LinkSecret carries the token bots present in hello, made once like the auth token: a bot already
+// running holds the value it was started with, and rewriting it would unlink every one of them.
+func LinkSecret(server *v1alpha1.MCPServer, token string) *corev1.Secret {
+	return secret(server, LinkSecretName(server), v1alpha1.DefaultTokenKey, token)
+}
+
+func secret(server *v1alpha1.MCPServer, name, key, value string) *corev1.Secret {
 	return &corev1.Secret{
 		TypeMeta:   typeMeta("v1", "Secret"),
-		ObjectMeta: objectMeta(server, GeneratedSecretName(server)),
+		ObjectMeta: objectMeta(server, name),
 		Type:       corev1.SecretTypeOpaque,
-		StringData: map[string]string{ref.Key: token},
+		StringData: map[string]string{key: value},
 	}
 }
 
@@ -256,13 +275,13 @@ func container(server *v1alpha1.MCPServer, defaults Defaults) corev1.Container {
 			{Name: portMCP, ContainerPort: v1alpha1.MCPServerPort, Protocol: corev1.ProtocolTCP},
 			{Name: portBotLink, ContainerPort: BotLinkPort, Protocol: corev1.ProtocolTCP},
 		},
-		Env: append(env(server), corev1.EnvVar{
-			Name: "MCP_AUTH_TOKEN",
-			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: token.Name},
-				Key:                  token.Key,
-			}},
-		}),
+		Env: append(env(server),
+			corev1.EnvVar{Name: "MCP_AUTH_TOKEN", ValueFrom: secretKeyRef(token.Name, token.Key)},
+			// The server refuses a hello without this token once it is set, and writes the Secret's
+			// name into every bot it creates, so the bots it starts are the only ones that link.
+			corev1.EnvVar{Name: "BOT_LINK_TOKEN", ValueFrom: secretKeyRef(LinkSecretName(server), v1alpha1.DefaultTokenKey)},
+			corev1.EnvVar{Name: "MCP_BOTS_LINK_SECRET", Value: LinkSecretName(server)},
+		),
 		StartupProbe: &corev1.Probe{
 			ProbeHandler:     httpGet("/actuator/health/liveness"),
 			PeriodSeconds:    2,
@@ -357,6 +376,13 @@ func objectMeta(server *v1alpha1.MCPServer, name string) metav1.ObjectMeta {
 
 func typeMeta(apiVersion, kind string) metav1.TypeMeta {
 	return metav1.TypeMeta{APIVersion: apiVersion, Kind: kind}
+}
+
+func secretKeyRef(name, key string) *corev1.EnvVarSource {
+	return &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: name},
+		Key:                  key,
+	}}
 }
 
 func httpGet(path string) corev1.ProbeHandler {

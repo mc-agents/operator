@@ -4,13 +4,13 @@
 replicaCount: 1
 
 image:
-  registry: junhyung.cloud/library
+  registry: junhyung.cloud/mc-agents
   repository: operator
   # Empty falls back to Chart.appVersion. A promotion swaps only this value.
   tag: ""
   pullPolicy: IfNotPresent
 
-# junhyung.cloud/library allows anonymous pull, so nothing is needed by default.
+# junhyung.cloud/mc-agents allows anonymous pull, so nothing is needed by default.
 imagePullSecrets: []
 
 nameOverride: ""
@@ -61,8 +61,8 @@ leaderElection:
 # What an MCPServer runs when its spec names no image. The tag is the MCP server release this
 # operator release was verified against.
 mcpServer:
-  image: junhyung.cloud/library/mcp-server
-  tag: "0.61.0"
+  image: junhyung.cloud/mc-agents/mcp-server
+  tag: "0.62.0"
 
 # Renders ClusterMinecraftBotProfile "default", which every bot without a nearer profile takes its
 # image tags and pod settings from. Its spec is a MinecraftBotProfile spec, e.g.
@@ -81,18 +81,18 @@ bots:
   #   <registry>/bot-fabric:<fabricTag>-mc<spec.minecraftVersion>
   #   <registry>/bot-azalea:<azaleaTag>-mc<spec.minecraftVersion>
   # so an image is always pinned to one Minecraft version: each kind is built against one.
-  registry: junhyung.cloud/library
+  registry: junhyung.cloud/mc-agents
   # The bot releases this operator release was verified against. latest resolves to a moving
   # tag, and IfNotPresent keeps whatever build a node pulled first.
-  fabricTag: "0.69.1"
-  azaleaTag: "0.21.1"
+  fabricTag: "0.70.0"
+  azaleaTag: "0.22.0"
 
   # fabric bots cannot ship the Minecraft client jar inside the image: redistribution is not
   # ours to grant. An initContainer pulls it from the Mojang version manifest into a cache
   # volume instead. Point spec.assets.claimName at a PVC that a Job already filled to turn that
   # 200-600MB download into a mount. Published from bot-fabric under its version, so the tag is
   # fabricTag's; the Minecraft version is appended as for the bot images.
-  assetFetcherImage: junhyung.cloud/library/mc-assets:0.69.1
+  assetFetcherImage: junhyung.cloud/mc-agents/mc-assets:0.70.0
 
   # Paper refuses a second login from the same address within four seconds. Bot pods each get
   # their own IP so this rarely bites, but a pool scaling from 0 to 8 creates eight pods in one

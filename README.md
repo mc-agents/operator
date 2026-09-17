@@ -26,7 +26,7 @@ The chart is an OCI artifact, so Helm 3.8 or later. It carries the CRDs as relea
 upgrades them with the operator.
 
 ```console
-helm install mc-agents-operator oci://junhyung.cloud/library/charts/mc-agents-operator \
+helm install mc-agents-operator oci://junhyung.cloud/mc-agents/charts/mc-agents-operator \
   --version <v> --namespace mc-agents-system --create-namespace
 ```
 
@@ -54,7 +54,9 @@ kubectl get minecraftbots -n game -w
 ```
 
 Each release is verified against the k3s that k3d 5.9 creates, currently v1.35; nothing here
-needs an API newer than a cluster from the last few years has.
+needs an API newer than a cluster from the last few years has. The MCP server and bot releases it
+was verified with are in [`docs/compatibility.md`](docs/compatibility.md), one row per operator
+release, with the order the four ship in.
 
 ## Where things live
 
@@ -64,7 +66,7 @@ asks for an MCP server there, and everything that server does stays there:
 ```
 mc-agents-system          the operator
 game (a tenant)           MCPServer mc-agents
-                            -> Deployment, two Services, NetworkPolicy, ServiceAccount, Role, RoleBinding, token Secret
+                            -> Deployment, two Services, NetworkPolicy, ServiceAccount, Role, RoleBinding, two token Secrets
                           MinecraftBotProfile default        (optional)
                           MinecraftBot scout-1               created by join-server
                             -> Pod
@@ -107,11 +109,22 @@ also all its Role allows.
 
 The MCP port is on the Service `<name>-mcp-server`, of whatever `spec.service.type` asks for: the
 bearer token is that port's gate. The bot-link port is on `<name>-mcp-server-bots`, always a
-ClusterIP, behind a NetworkPolicy that admits only pods labelled `app.kubernetes.io/name:
-minecraft-bot`, from any namespace; that port has no authentication and never leaves the cluster.
-The kubelet's probes bypass the policy on kube-router, Calico and Cilium alike, so the readiness
-probe needs no rule. `READY` is `False` with the kubelet's own reason, `ImagePullBackOff` say,
-when the server pod cannot start, rather than waiting for the Deployment to call it stalled.
+ClusterIP, behind a NetworkPolicy that admits only pods of the MCPServer's own namespace that carry
+`app.kubernetes.io/name: minecraft-bot`; the MCP port's rule stays open, since the bearer token
+gates it. That port never leaves the cluster. The kubelet's probes bypass the policy on
+kube-router, Calico and Cilium alike, so the readiness probe needs no rule. `READY` is `False`
+with the kubelet's own reason, `ImagePullBackOff` say, when the server pod cannot start, rather
+than waiting for the Deployment to call it stalled.
+
+Behind the policy is a second token, so a pod that gets past it still cannot pass itself off as a
+bot. The operator makes `<name>-mcp-server-link` once, as it does the auth token, hands it to the
+server as `BOT_LINK_TOKEN`, and tells the server its name as `MCP_BOTS_LINK_SECRET`: join-server
+writes it into every bot it creates as `spec.linkTokenSecretRef`, the pod gets it as
+`BOT_LINK_TOKEN`, and a `hello` without it is refused. A bot declared by hand names the same Secret
+itself, as [`examples/minecraftbot-azalea.yaml`](examples/minecraftbot-azalea.yaml) does; one that
+names none links only to a server that has no token configured, which is what lets the server, the
+bots and the operator ship one at a time. The two Secrets stay two: an agent holds the auth token,
+and a bot that could read it would hold the MCP port too.
 
 An empty `spec.image.tag` runs the operator's `--mcp-server-tag`, the MCP server release this
 operator release was verified against.
@@ -161,9 +174,12 @@ spec:
   server:
     host: mc-agents-mcp-server-bots.game.svc
     port: 8765
+  linkTokenSecretRef:         # the MCPServer's <name>-mcp-server-link; key defaults to token
+    name: mc-agents-mcp-server-link
 ```
 
-join-server writes these; writing one by hand is for a bot outside any MCPServer.
+join-server writes these; writing one by hand is for a bot outside any MCPServer, or one you want
+to outlive a session, since leave-server gives back only the bots join-server asked for.
 
 ```console
 $ kubectl get minecraftbots
@@ -237,8 +253,8 @@ in place, and each bot then replaces its own pod.
 
 | kind | image |
 | --- | --- |
-| `fabric` | `junhyung.cloud/library/bot-fabric:<tag>-mc<minecraftVersion>` |
-| `azalea` | `junhyung.cloud/library/bot-azalea:<tag>-mc<minecraftVersion>` |
+| `fabric` | `junhyung.cloud/mc-agents/bot-fabric:<tag>-mc<minecraftVersion>` |
+| `azalea` | `junhyung.cloud/mc-agents/bot-azalea:<tag>-mc<minecraftVersion>` |
 
 The tag carries the Minecraft version because each kind is built against one version: a Fabric
 client against its mappings, azalea against its protocol. The registry and `<tag>` come from the
@@ -281,6 +297,7 @@ under *How a bot is told where to dial*. Adding to them is a change to that docu
 | variable | meaning |
 | --- | --- |
 | `MCP_SERVER_HOST`, `MCP_SERVER_PORT` | where to dial |
+| `BOT_LINK_TOKEN` | what to present in `hello`, from the Secret `spec.linkTokenSecretRef` names; absent when it names none |
 | `BOT_NAME` | the name the bot reports in `hello`; `spec.botName`, else the CR name truncated to 16 |
 | `BOT_KIND`, `MC_VERSION` | what the bot should claim to be |
 | `HEALTH_PORT` | port to serve `/healthz` and `/readyz` on (8080) |
@@ -302,7 +319,7 @@ api/v1alpha1/             CRD types; controller-gen generates deepcopy and the c
 cmd/                      the binary: flags, the manager, and nothing else
 internal/controller/bot/  MinecraftBot -> Pod
 internal/controller/pool/ MinecraftBotPool -> MinecraftBots
-internal/controller/mcpserver/ MCPServer -> Deployment, Service, RBAC, token
+internal/controller/mcpserver/ MCPServer -> Deployment, Services, RBAC, tokens
 internal/mcpserverspec/   the objects an MCPServer turns into
 internal/podstatus/       what the kubelet says about a pod it cannot start
 internal/metrics/         bots by phase and link, MCPServers ready
@@ -351,6 +368,7 @@ The reconcile loop cannot be proven by unit tests alone, so there is a dedicated
 
 ```console
 make verify           # k3d-up + k3d-deploy + k3d-verify
+make verify-upgrade   # k3d-up + the previous release + k3d-verify-upgrade
 make k3d-down         # throw it away
 ```
 
@@ -366,31 +384,78 @@ token that survives a reconcile, turns Ready, gets a new token from a delete and
 deleting it takes its objects with it. Before any of that, the schema refuses a pool template with
 a `botName` and a bot overriding an environment name the operator sets.
 
+Then the loop the whole thing exists for, against the MCP server release `values.yaml` pins: an
+azalea bot declared by hand with the server's link Secret reaches `Linked`; through a port-forward
+to the MCP Service, `list-bots` names it; `join-server` for a new azalea bot against a host that
+does not resolve fails saying the bot linked and the game server refused it, and a MinecraftBot
+labelled `mc-agents.junhyung.cloud/requested-by=mcp-server` has appeared; `leave-server` gives it
+back and the MinecraftBot is gone.
+
 `hack/testdata` holds what only the script has a use for: profiles whose tags are labels rather
 than images, a bot with nowhere to dial. `examples/` is for people, and every image in it exists.
 
 CI runs the same loop on a k3d cluster named `ci` before it publishes anything, so an image or chart
-in the registry has reconciled these objects at least once.
+in the registry has reconciled these objects at least once. There the k3d node image comes through
+the registry's proxy cache of Docker Hub, since the runners share addresses and Docker Hub
+throttles anonymous pulls per address; the Makefile stays on Docker Hub, so a laptop needs no login.
 
 **The cluster is named `mc-agents` and nothing else.** `hyperfarm-local` is shared between sessions
 and has already lost work to a concurrent deploy; the Makefile refuses to run against it.
 
+### Upgrading from the previous release
+
+```console
+make verify-upgrade                    # from the release before this one
+make verify-upgrade FROM=0.12.0-20260916095130.gdccf990b
+make k3d-down
+```
+
+On a cluster with no operator yet, `hack/verify-k3d.sh --from <version>` installs the published
+chart of that version, applies the fixtures under it, replaces it with the source chart the way
+`make k3d-deploy` does, and asserts that the bot, the pool, the MCPServer and its token are the
+same objects afterwards, that the CRDs belong to the release, and that the new operator reconciles
+what it inherited: the pool is still at three, the bot is Running again, the MCPServer gains its
+link Secret and turns Ready. For a release before 0.13 it first takes the adoption step documented
+under *Upgrading*, which is what that row is for. CI runs two rows before publishing: the release
+before this one, and 0.12, whose chart exists only under its stamped tag.
+
 ## Releasing
 
 `VERSION` is the single source of truth; `Chart.yaml`'s `version` and `appVersion` must match it,
-and CI checks both that they agree and that `VERSION` went up. A push to `main` publishes
-`junhyung.cloud/library/operator:<version>-<stamp>.g<sha>`, the same image as `:<version>`, and
-the chart to `junhyung.cloud/library/charts` under `<version>` with `<version>` as its
+and CI checks both that they agree and that `VERSION` went up whenever something that ships
+changed. A push to `main` that changed something that ships publishes
+`junhyung.cloud/mc-agents/operator:<version>-<stamp>.g<sha>`, the same image as `:<version>`, and
+the chart to `junhyung.cloud/mc-agents/charts` under `<version>` with `<version>` as its
 `appVersion`, so `helm install --version <version>` runs the operator of that version. All of it is
 signed with keyless cosign. A Harbor robot account pushes them, from the repository secrets
-`REGISTRY_USERNAME` and `REGISTRY_PASSWORD`. Pulling needs neither: the `library` project allows
-anonymous pull.
+`REGISTRY_USERNAME` and `REGISTRY_PASSWORD`. Pulling needs neither: the `mc-agents` project allows
+anonymous pull. The same push tags the commit `v<version>` and makes a GitHub release of it, with
+the commits since the previous tag and the set it was verified with as the notes; a tag that is
+already there is left where it is. A push that changed only documentation publishes and tags
+nothing: `hack/check-version.sh` says so, and `:<version>` keeps pointing at the build that was
+verified under it.
 
 A release also states what it was verified against: `mcpServer.tag`, `bots.fabricTag`,
 `bots.azaleaTag` and the `mc-assets` tag in `values.yaml` are the MCP server and bot releases
-`make verify` ran with, and move when a release is verified against newer ones.
+`make verify` ran with, and move when a release is verified against newer ones. Each release adds
+its row to [`docs/compatibility.md`](docs/compatibility.md).
 
 ## Upgrading
+
+### from 0.13
+
+0.14 moves every artifact from the registry's `library` project to one of its own, `mc-agents`:
+the chart is `oci://junhyung.cloud/mc-agents/charts/mc-agents-operator`, and the operator, MCP
+server and bot images are under `junhyung.cloud/mc-agents/`. The earlier releases stay where they
+were rather than being copied, so `helm upgrade` names the new location and nothing else changes;
+the chart's defaults for the image registries move with it, and a values file that pinned
+`image.registry` or `bots.registry` to `junhyung.cloud/library` keeps pulling the old builds until
+it is changed.
+
+0.14 also hands every `MCPServer` a link token: a `<name>-mcp-server-link` Secret, the server
+refuses a bot that does not present it, and the bots `join-server` starts are pointed at the
+Secret. A `MinecraftBot` you declared by hand is not, and stops linking until its spec carries
+`linkTokenSecretRef: {name: <name>-mcp-server-link}`; a pool's template takes the same field.
 
 ### from 0.12
 
@@ -411,7 +476,8 @@ done
 
 With Helm 4, which applies server-side, the first upgrade also needs `--force-conflicts`: the
 schema's field manager is still `kubectl` from the hand-applied CRDs, and the upgrade is what takes
-it over. Helm 3 applies client-side and needs nothing.
+it over. Helm 3 applies client-side and needs nothing. `make verify-upgrade FROM=<0.12 chart>`
+walks exactly this path on a k3d cluster, and CI does before every release.
 
 The release name and namespace are those of your install. Skipping this fails the upgrade with
 `invalid ownership metadata` and changes nothing. The CRDs carry `helm.sh/resource-policy: keep`, so an
@@ -433,16 +499,15 @@ creates them in a group nothing watches.
 
 ## Known limits
 
-- The bot port carries no authentication, by the decision in `docs/architecture.md`: the port never
-  leaves the cluster and the NetworkPolicy the operator makes is the gate. That gate is only as
-  good as the cluster's network plugin; without one enforcing policies, any pod in the cluster can
-  dial it. Rotating a token per bot would put secret rotation in the operator for a port nothing
-  outside can reach.
+- The bot port has two gates and no more: the NetworkPolicy, which is only as good as the
+  cluster's network plugin, and the link token, which is one per MCPServer rather than one per
+  bot. A bot that can read the Secret can link as any name; a token per bot would put secret
+  rotation in the operator for a port nothing outside the namespace can reach.
 - `LINK` is inferred from pod readiness. The operator never talks to the MCP server, so a bot that
   reports ready while lying about its link would be believed.
 - `Lost` is a heuristic: a running container that restarted and is not ready again. There is no
   history to distinguish it from a bot that was never linked.
-- The asset fetcher is `junhyung.cloud/library/mc-assets`, published from `bot-fabric` so that
+- The asset fetcher is `junhyung.cloud/mc-agents/mc-assets`, published from `bot-fabric` so that
   the layout it writes and the layout a fabric bot reads come from one copy of one script. Its
   contract is `--version <mc> --dest <dir>`, or the same two as `MC_VERSION` and `MC_ASSETS_DIR`.
 - Secrets are not watched, so rotating a token is two commands. For the generated one,
@@ -450,7 +515,10 @@ creates them in a group nothing watches.
   `kubectl -n <ns> rollout restart deployment/<name>-mcp-server`: the restart is what enqueues the
   MCPServer, through the Deployment it owns, and the reconcile finds the Secret missing and makes
   a new one. Agents read the new value from the Secret `status.tokenSecretRef` names, which has
-  not changed. For an `existingSecret`, rotate the Secret yourself and run only the restart.
+  not changed. For an `existingSecret`, rotate the Secret yourself and run only the restart. The
+  link token rotates the same way, on `<name>-mcp-server-link`, and takes every bot with it: a
+  running pod holds the value it started with, so delete the bots' pods after the restart and
+  the operator makes new ones that read the new token.
 - Bot pods are bare pods, not a Deployment or StatefulSet. A drained node deletes the pod and the
   operator makes a new one; the bot's in-game session does not survive that, and nothing here
   pretends otherwise.

@@ -11,3 +11,7 @@ spec:
     # The bot-link Service of MCPServer "mc-agents" in namespace "game".
     host: mc-agents-mcp-server-bots.game.svc
     port: 8765
+  linkTokenSecretRef:
+    # The link token that MCPServer made, which its server expects in every hello. join-server
+    # writes this into the bots it creates; a bot declared by hand has to name it itself.
+    name: mc-agents-mcp-server-link

@@ -8,7 +8,7 @@ import (
 	"github.com/mc-agents/operator/api/v1alpha1"
 )
 
-const DefaultRegistry = "junhyung.cloud/library"
+const DefaultRegistry = "junhyung.cloud/mc-agents"
 
 type Resolver interface {
 	Resolve(spec *v1alpha1.MinecraftBotSpec, profile *v1alpha1.BotProfileSpec) (string, error)

@@ -104,12 +104,19 @@ func TestTheGeneratedTokenIsMadeOnceAndKept(t *testing.T) {
 	h.reconcile(t)
 	h.reconcile(t)
 
-	var secret corev1.Secret
-	if err := h.get(t, "mc-agents-mcp-server-auth", &secret); err != nil {
-		t.Fatalf("get secret: %v", err)
+	var auth, link corev1.Secret
+	if err := h.get(t, "mc-agents-mcp-server-auth", &auth); err != nil {
+		t.Fatalf("get auth secret: %v", err)
 	}
-	if h.tokens != 1 {
-		t.Fatalf("generated %d tokens, want exactly one", h.tokens)
+	if err := h.get(t, "mc-agents-mcp-server-link", &link); err != nil {
+		t.Fatalf("get link secret: %v", err)
+	}
+	if h.tokens != 2 {
+		t.Fatalf("generated %d tokens, want exactly one per secret", h.tokens)
+	}
+	// Two values, and never the same one: a bot that reads its link token must not hold the MCP port.
+	if auth.StringData["token"] == link.StringData["token"] {
+		t.Fatal("the link secret carries the auth token")
 	}
 
 	var server v1alpha1.MCPServer
@@ -141,7 +148,7 @@ func TestAServerPodTheKubeletCannotStartNamesTheReason(t *testing.T) {
 				Name: mcpserverspec.ContainerName,
 				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
 					Reason:  "ImagePullBackOff",
-					Message: `Back-off pulling image "junhyung.cloud/library/mcp-server:0.55.o"`,
+					Message: `Back-off pulling image "junhyung.cloud/mc-agents/mcp-server:0.55.o"`,
 				}},
 			}},
 		},
@@ -199,6 +206,11 @@ func TestAnExistingSecretIsUsedAndNoneIsMade(t *testing.T) {
 
 	if err := h.get(t, "mc-agents-mcp-server-auth", &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("a generated secret exists alongside the existing one: %v", err)
+	}
+	// The link token is the operator's whichever way the auth token comes: nothing in the spec
+	// supplies one, and the bots are told where it is by the server.
+	if err := h.get(t, "mc-agents-mcp-server-link", &corev1.Secret{}); err != nil {
+		t.Fatalf("get link secret: %v", err)
 	}
 	var deployment appsv1.Deployment
 	if err := h.get(t, "mc-agents-mcp-server", &deployment); err != nil {
@@ -267,7 +279,7 @@ func TestTheServerMakesBotsInItsOwnNamespaceWithItsProfile(t *testing.T) {
 			t.Errorf("%s got %q, want %q", name, got, value)
 		}
 	}
-	if c.Image != "junhyung.cloud/library/mcp-server:0.55.0" {
+	if c.Image != "junhyung.cloud/mc-agents/mcp-server:0.55.0" {
 		t.Errorf("image got %q", c.Image)
 	}
 	if owner := metav1.GetControllerOf(&deployment); owner == nil || owner.UID != "server-uid" {
