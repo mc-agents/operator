@@ -67,7 +67,7 @@ jobs:
           kubectl --context k3d-ci -n mc-agents-system logs deploy/mc-agents-operator --all-containers > verify-failure/operator.log || true
           kubectl --context k3d-ci get minecraftbots,minecraftbotpools,mcpservers -A -o yaml > verify-failure/objects.yaml || true
           kubectl --context k3d-ci get pods -A -o wide > verify-failure/pods.txt || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: verify-failure
