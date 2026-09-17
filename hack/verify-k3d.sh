@@ -104,11 +104,26 @@ await "minecraftbot/scout names its pod" 60 equals minecraftbot scout .status.po
 await "pod/scout exists" 60 k get pod scout
 
 echo "== a missing bot image lands in status, not just in the pod"
-# A tag no release will ever publish. The default tag is a real image once one has been released.
-k patch minecraftbot scout --type merge -p '{"spec":{"image":{"tag":"verify-missing"}}}'
-await "minecraftbot/scout reports the pull failure" 180 \
-	contains minecraftbot scout .status.lastError ImagePull
-await "minecraftbot/scout is Failed" 60 equals minecraftbot scout .status.phase Failed
+# A tag no release will ever publish, on an azalea bot: a fabric pod fetches half a gigabyte of
+# assets in an init container before the kubelet ever pulls the bot image, and on a runner with
+# an empty cache the pull failure came after the wait had run out.
+k apply -f - <<EOF
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MinecraftBot
+metadata:
+  name: missing
+spec:
+  kind: azalea
+  minecraftVersion: "26.1.2"
+  image:
+    tag: verify-missing
+  server:
+    host: nowhere.invalid
+EOF
+await "minecraftbot/missing reports the pull failure" 180 \
+	contains minecraftbot missing .status.lastError ImagePull
+await "minecraftbot/missing is Failed" 60 equals minecraftbot missing .status.phase Failed
+k delete minecraftbot missing --wait=true
 
 echo "== the pool owns its bots"
 await "the pool has three bots" 60 count_is scouts 3
