@@ -203,8 +203,11 @@ jobs:
             ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}
             ${{ env.IMAGE }}:${{ steps.tag.outputs.version }}
             ${{ env.IMAGE }}:latest
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+          # GitHub's cache, not the registry: the registry sits behind Cloudflare, which cuts an
+          # upload at 100MB, and the Go build cache layer is past that once it changes and has to be
+          # sent whole -- the publish died on it with a 499 mid-PUT. A cache miss costs a compile.
+          cache-from: type=gha,scope=image
+          cache-to: type=gha,scope=image,mode=max
 
       - name: sign image
         run: cosign sign --yes "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
