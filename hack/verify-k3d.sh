@@ -323,6 +323,10 @@ await "the pool empties" 60 count_is scouts 0
 await "status.replicas is still reported at zero" 30 equals minecraftbotpool scouts .status.replicas 0
 
 echo "== deleting the CR collects the pod"
+# Running first: a pod deleted while the kubelet is still pulling its image stays Terminating
+# until the pull returns, and on a runner meeting a new bot image for the first time that took
+# longer than the wait below, which is meant to time the operator and not the registry.
+await_running scout 180
 k delete minecraftbot scout --wait=true
 await "pod/scout is gone" 60 bash -c "! kubectl --context ${CONTEXT} -n ${NAMESPACE} get pod scout"
 
