@@ -68,9 +68,13 @@ lint-go: ## Run golangci-lint with the repository's configuration.
 
 # With no BASE the comparison is the merge base with origin/main, which on a branch is the fork
 # point and on main itself is HEAD; with no origin at all only the consistency half runs.
+# BASE unset is a laptop, and the branch is measured against main. BASE set but empty is CI with
+# nothing to compare against -- a dispatch, a force push -- and that has to reach the script as no
+# base, where publishing is the safe side; defaulting it to merge-base would measure main against
+# itself and call a release "nothing that ships changed".
 .PHONY: check-version
 check-version: ## VERSION and Chart.yaml agree, and VERSION went up since BASE.
-	bash hack/check-version.sh $${BASE:-$$(git merge-base origin/main HEAD 2>/dev/null || true)}
+	bash hack/check-version.sh $${BASE-$$(git merge-base origin/main HEAD 2>/dev/null || true)}
 
 .PHONY: check
 check: check-version vet test lint lint-go ## Everything CI runs.
