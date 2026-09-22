@@ -62,7 +62,7 @@ leaderElection:
 # operator release was verified against.
 mcpServer:
   image: junhyung.cloud/mc-agents/mcp-server
-  tag: "0.64.0"
+  tag: "0.64.1"
 
 # Renders ClusterMinecraftBotProfile "default", which every bot without a nearer profile takes its
 # image tags and pod settings from. Its spec is a MinecraftBotProfile spec, e.g.
