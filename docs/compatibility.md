@@ -12,6 +12,7 @@ version the bot images are built for, carried in their tags as `-mc<version>`.
 
 | operator | mcp-server | catalogue | bot-fabric | bot-azalea | mc-assets | Minecraft | release order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.17.4 | 0.65.7 | 5.4.0 | 0.72.0 | 0.24.0 | 0.72.0 | 26.1.2 | the bots, then mcp-server, then the operator |
 | 0.17.3 | 0.65.6 | 5.4.0 | 0.72.0 | 0.24.0 | 0.72.0 | 26.1.2 | the bots, then mcp-server, then the operator |
 | 0.17.2 | 0.65.2 | 5.4.0 | 0.72.0 | 0.24.0 | 0.72.0 | 26.1.2 | the bots, then mcp-server, then the operator |
 | 0.17.1 | 0.65.1 | 5.4.0 | 0.72.0 | 0.24.0 | 0.72.0 | 26.1.2 | the bots, then mcp-server, then the operator |
