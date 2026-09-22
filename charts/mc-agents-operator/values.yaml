@@ -62,7 +62,7 @@ leaderElection:
 # operator release was verified against.
 mcpServer:
   image: junhyung.cloud/mc-agents/mcp-server
-  tag: "0.65.9"
+  tag: "0.66.0"
 
 # Renders ClusterMinecraftBotProfile "default", which every bot without a nearer profile takes its
 # image tags and pod settings from. Its spec is a MinecraftBotProfile spec, e.g.
@@ -84,15 +84,15 @@ bots:
   registry: junhyung.cloud/mc-agents
   # The bot releases this operator release was verified against. latest resolves to a moving
   # tag, and IfNotPresent keeps whatever build a node pulled first.
-  fabricTag: "0.72.0"
-  azaleaTag: "0.24.0"
+  fabricTag: "0.73.0"
+  azaleaTag: "0.25.0"
 
   # fabric bots cannot ship the Minecraft client jar inside the image: redistribution is not
   # ours to grant. An initContainer pulls it from the Mojang version manifest into a cache
   # volume instead. Point spec.assets.claimName at a PVC that a Job already filled to turn that
   # 200-600MB download into a mount. Published from bot-fabric under its version, so the tag is
   # fabricTag's; the Minecraft version is appended as for the bot images.
-  assetFetcherImage: junhyung.cloud/mc-agents/mc-assets:0.72.0
+  assetFetcherImage: junhyung.cloud/mc-agents/mc-assets:0.73.0
 
   # Paper refuses a second login from the same address within four seconds. Bot pods each get
   # their own IP so this rarely bites, but a pool scaling from 0 to 8 creates eight pods in one
