@@ -317,13 +317,19 @@ func resources(bot *v1alpha1.MinecraftBot) corev1.ResourceRequirements {
 		// under Xvfb there is no graphics card, so every texture and every chunk mesh is system
 		// memory, and no client setting moves it. The old request of 1536Mi was under what the
 		// pod actually used, and a 2Gi limit left nothing for a server that pushes a pack.
+		//
+		// The limit was 3Gi and a server with a real resource pack went past it: a bot sitting at
+		// about 1GiB was OOM killed while taking chunks in, and what the logs then showed was an
+		// X11 failure -- the killed container leaves its X lock behind and the restart cannot open
+		// a display -- so the memory never appeared in them at all. 4Gi is what a desktop client
+		// is given for a modded pack, and the heap is only 1G of it: the rest is textures.
 		return corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("500m"),
 				corev1.ResourceMemory: resource.MustParse("2Gi"),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("3Gi"),
+				corev1.ResourceMemory: resource.MustParse("4Gi"),
 			},
 		}
 	}
