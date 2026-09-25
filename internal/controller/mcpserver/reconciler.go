@@ -125,15 +125,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
-	var live appsv1.Deployment
-	if err := r.client.Get(ctx, client.ObjectKeyFromObject(deployment), &live); err != nil && !apierrors.IsNotFound(err) {
+	// nil when the Get finds nothing, which the apply moments ago makes a cache that has not caught
+	// up rather than a missing Deployment. Handing observe the zero value instead would pass an
+	// empty DeploymentStatus off as the live one's, which reads the same as a pod not up yet.
+	var live *appsv1.Deployment
+	var found appsv1.Deployment
+	switch err := r.client.Get(ctx, client.ObjectKeyFromObject(deployment), &found); {
+	case err == nil:
+		live = &found
+	case !apierrors.IsNotFound(err):
 		return ctrl.Result{}, fmt.Errorf("get deployment: %w", err)
 	}
 	var pods corev1.PodList
 	if err := r.client.List(ctx, &pods, client.InNamespace(server.Namespace), client.MatchingLabels(mcpserverspec.SelectorLabels(server))); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list server pods: %w", err)
 	}
-	return ctrl.Result{}, r.writeStatus(ctx, server, readyCondition(server, &live, pods.Items))
+	return ctrl.Result{}, r.writeStatus(ctx, server, observe(server, live, pods.Items))
 }
 
 // ensureSecret creates a generated Secret when it is missing and leaves it alone when it is not. An
@@ -197,49 +204,93 @@ func (r *Reconciler) apply(ctx context.Context, obj client.Object) error {
 	return nil
 }
 
-// readyCondition is Available once the Deployment has a pod up. Until then it names what is in the
-// way: a pod the kubelet cannot bring up first, since a mistyped tag would otherwise read as
-// "waiting for the server pod" for the ten minutes the Deployment takes to call it stalled.
-func readyCondition(server *v1alpha1.MCPServer, deployment *appsv1.Deployment, pods []corev1.Pod) metav1.Condition {
-	condition := metav1.Condition{
+// observation is the one moment status reports twice: the phase a reader sees at a glance and the
+// condition a controller waits on. Two answers to the same question is worse than either of them
+// being wrong on its own, so only the phase is held and the condition is read off it. Holding both
+// and building them together in one branch each would be the same thing only while every branch is
+// in this function, and fail() already assembles one from somewhere else.
+type observation struct {
+	phase   v1alpha1.MCPServerPhase
+	reason  string
+	message string
+}
+
+// ready is what the phase amounts to for something waiting on this server. Running is the server
+// accepting bots; every other phase is a reason it is not, and the reason says which.
+func (o observation) ready(generation int64) metav1.Condition {
+	status := metav1.ConditionFalse
+
+	if o.phase == v1alpha1.MCPServerPhaseRunning {
+		status = metav1.ConditionTrue
+	}
+	return metav1.Condition{
 		Type:               v1alpha1.ConditionReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             "Progressing",
-		Message:            "waiting for the server pod to become ready",
-		ObservedGeneration: server.Generation,
+		Status:             status,
+		Reason:             o.reason,
+		Message:            o.message,
+		ObservedGeneration: generation,
 	}
-	if deployment.Generation != 0 && deployment.Status.ObservedGeneration >= deployment.Generation && deployment.Status.AvailableReplicas > 0 {
-		condition.Status = metav1.ConditionTrue
-		condition.Reason = "Available"
-		condition.Message = "the server is accepting bots"
-		return condition
+}
+
+// observe is Available once the Deployment has a pod up, with a nil deployment meaning there is
+// none in view. Until then it names what is in the way: a pod the kubelet cannot bring up first,
+// since a mistyped tag would otherwise read as "waiting for the server pod" for the ten minutes the
+// Deployment takes to call it stalled.
+func observe(server *v1alpha1.MCPServer, deployment *appsv1.Deployment, pods []corev1.Pod) observation {
+	// A Deployment whose own controller has not caught up with its spec is reporting replicas from
+	// the spec before it, and one of those is not the server the MCPServer asks for. It compares
+	// the Deployment with itself and nothing here compares it with the MCPServer, so the reconcile
+	// that follows an edit can still read the Deployment as it was before the apply; the watch on
+	// it corrects that a moment later.
+	if deployment != nil && deployment.Status.ObservedGeneration >= deployment.Generation && deployment.Status.AvailableReplicas > 0 {
+		return observation{
+			phase:   v1alpha1.MCPServerPhaseRunning,
+			reason:  "Available",
+			message: "the server is accepting bots",
+		}
 	}
+	// A pod the kubelet cannot bring up comes first, since a mistyped tag would otherwise read as
+	// "waiting for the server pod" for the ten minutes the Deployment takes to call it stalled.
 	for i := range pods {
 		if pods[i].DeletionTimestamp != nil {
 			continue
 		}
 		if reason, message, ok := podstatus.Blocked(&pods[i]); ok {
-			condition.Reason = reason
-			condition.Message = fmt.Sprintf("pod %s: %s", pods[i].Name, message)
-			return condition
+			return observation{
+				phase:   v1alpha1.MCPServerPhaseFailed,
+				reason:  reason,
+				message: fmt.Sprintf("pod %s: %s", pods[i].Name, message),
+			}
+		}
+	}
+	// Nothing in view is bringing a pod up, which is what Starting would claim: the apply has not
+	// reached the cache yet, or the Deployment has been deleted out from under the server.
+	if deployment == nil {
+		return observation{
+			phase:   v1alpha1.MCPServerPhasePending,
+			reason:  "Progressing",
+			message: "waiting for the server Deployment",
 		}
 	}
 	for _, c := range deployment.Status.Conditions {
+		// Progressing goes False only once the rollout has given up. Waiting longer will not
+		// finish it, so this is Failed rather than a server still on its way up.
 		if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse {
-			condition.Reason = c.Reason
-			condition.Message = c.Message
+			return observation{phase: v1alpha1.MCPServerPhaseFailed, reason: c.Reason, message: c.Message}
 		}
 	}
-	return condition
+	return observation{
+		phase:   v1alpha1.MCPServerPhaseStarting,
+		reason:  "Progressing",
+		message: "waiting for the server pod to become ready",
+	}
 }
 
 func (r *Reconciler) fail(ctx context.Context, server *v1alpha1.MCPServer, reason string, cause error) error {
-	statusErr := r.writeStatus(ctx, server, metav1.Condition{
-		Type:               v1alpha1.ConditionReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            cause.Error(),
-		ObservedGeneration: server.Generation,
+	statusErr := r.writeStatus(ctx, server, observation{
+		phase:   v1alpha1.MCPServerPhaseFailed,
+		reason:  reason,
+		message: cause.Error(),
 	})
 	if statusErr != nil {
 		log.FromContext(ctx).Error(statusErr, "write status after failure")
@@ -247,16 +298,17 @@ func (r *Reconciler) fail(ctx context.Context, server *v1alpha1.MCPServer, reaso
 	return cause
 }
 
-func (r *Reconciler) writeStatus(ctx context.Context, server *v1alpha1.MCPServer, ready metav1.Condition) error {
+func (r *Reconciler) writeStatus(ctx context.Context, server *v1alpha1.MCPServer, observed observation) error {
 	token := mcpserverspec.TokenSecret(server)
 	status := v1alpha1.MCPServerStatus{
+		Phase:              observed.phase,
 		Endpoint:           mcpserverspec.Endpoint(server),
 		TokenSecretRef:     &token,
 		Image:              mcpserverspec.Image(server, r.defaults),
 		ObservedGeneration: server.Generation,
 		Conditions:         append([]metav1.Condition(nil), server.Status.Conditions...),
 	}
-	meta.SetStatusCondition(&status.Conditions, ready)
+	meta.SetStatusCondition(&status.Conditions, observed.ready(server.Generation))
 	if reflect.DeepEqual(server.Status, status) {
 		return nil
 	}

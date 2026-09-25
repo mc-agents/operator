@@ -19,6 +19,9 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -1320,6 +1323,19 @@ spec:
                 description: The generation of the spec this status reflects.
                 format: int64
                 type: integer
+              phase:
+                description: |-
+                  Where the server is: Pending, Starting, Running or Failed. Mostly that is what the Deployment
+                  behind it is doing, and Failed is also the operator failing to build what the server needs.
+                  Running is the same moment as Ready being True and the other three name what Ready is waiting
+                  on, so this splits what Ready=False leaves in one heap. A MinecraftBot's phase reads the same
+                  way, but its Ready is about the bot having linked rather than about its phase.
+                enum:
+                - Pending
+                - Starting
+                - Running
+                - Failed
+                type: string
               tokenSecretRef:
                 description: The Secret and key holding the bearer token, generated
                   or not.

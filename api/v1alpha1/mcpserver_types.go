@@ -30,6 +30,23 @@ type FeedsSpec struct {
 	Muted []Feed `json:"muted,omitempty"`
 }
 
+// MCPServerPhase is about the Deployment behind the server: Pending while nothing the operator can
+// see is bringing a pod up, Starting once the Deployment is there and its pod is on its way,
+// Running when a pod is available and the server is taking bots, Failed when the kubelet cannot
+// bring that pod up, the rollout has stalled, or the operator could not build what the server needs.
+// There is no Terminating: a deleted MCPServer takes everything it owns with it through the
+// ownerReferences, so the reconciler stops on the deletion timestamp and nothing would write it.
+//
+// +kubebuilder:validation:Enum=Pending;Starting;Running;Failed
+type MCPServerPhase string
+
+const (
+	MCPServerPhasePending  MCPServerPhase = "Pending"
+	MCPServerPhaseStarting MCPServerPhase = "Starting"
+	MCPServerPhaseRunning  MCPServerPhase = "Running"
+	MCPServerPhaseFailed   MCPServerPhase = "Failed"
+)
+
 // MCPServerAuth is where the bearer token agents present on the MCP port comes from.
 type MCPServerAuth struct {
 	// A Secret in this namespace that already holds the bearer token. Empty has the operator create
@@ -149,6 +166,14 @@ type SecretKeyRef struct {
 
 // MCPServerStatus is where the server is and whether it is accepting bots.
 type MCPServerStatus struct {
+	// Where the server is: Pending, Starting, Running or Failed. Mostly that is what the Deployment
+	// behind it is doing, and Failed is also the operator failing to build what the server needs.
+	// Running is the same moment as Ready being True and the other three name what Ready is waiting
+	// on, so this splits what Ready=False leaves in one heap. A MinecraftBot's phase reads the same
+	// way, but its Ready is about the bot having linked rather than about its phase.
+	// +optional
+	Phase MCPServerPhase `json:"phase,omitempty"`
+
 	// Where an agent calls, from inside the cluster.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
@@ -179,6 +204,7 @@ type MCPServerStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=mcps,categories=mc-agents
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.status.endpoint`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

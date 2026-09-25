@@ -120,8 +120,8 @@ spec:
 
 ```console
 $ kubectl get mcpservers -n game
-NAME        READY   ENDPOINT                                            AGE
-mc-agents   True    http://mc-agents-mcp-server.game.svc:3000/mcp       2m
+NAME        PHASE     READY   ENDPOINT                                            AGE
+mc-agents   Running   True    http://mc-agents-mcp-server.game.svc:3000/mcp       2m
 ```
 
 Everything the operator makes is named `<name>-mcp-server` and owned by the MCPServer, so deleting
@@ -138,6 +138,12 @@ gates it. That port never leaves the cluster. The kubelet's probes bypass the po
 kube-router, Calico and Cilium alike, so the readiness probe needs no rule. `READY` is `False`
 with the kubelet's own reason, `ImagePullBackOff` say, when the server pod cannot start, rather
 than waiting for the Deployment to call it stalled.
+
+`PHASE` says the same thing in the vocabulary a bot uses: `Running` is the moment `READY` turns
+`True`, `Starting` is the Deployment's pod on its way up, `Pending` is no Deployment in view yet,
+and `Failed` is a pod the kubelet will not start, a rollout that has given up, or a token or an
+apply the operator could not make. There is no `Terminating`: a deleted MCPServer takes everything
+it owns with it.
 
 Behind the policy is a second token, so a pod that gets past it still cannot pass itself off as a
 bot. The operator makes `<name>-mcp-server-link` once, as it does the auth token, hands it to the

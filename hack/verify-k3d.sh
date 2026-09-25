@@ -305,6 +305,13 @@ verify_upgrade() {
 		contains deployment mc-agents-mcp-server '.spec.template.spec.containers[0].env[*].name' BOT_LINK_TOKEN
 	await "mcpserver/mc-agents is Ready" 240 \
 		equals mcpserver mc-agents '.status.conditions[?(@.type=="Ready")].status' True
+	# Ready and the phase are two readings of one thing, and a Ready-only check is blind to the one
+	# going stale. This is the only place either of them is read against a real API server.
+	equals mcpserver mc-agents .status.phase Running || {
+		echo "mcpserver/mc-agents is Ready and $(field mcpserver mc-agents .status.phase), want Running" >&2
+		exit 1
+	}
+	echo "ok: the server is Running beside Ready"
 
 	echo "== cleaning up"
 	k delete mcpserver mc-agents --wait=true
@@ -481,6 +488,14 @@ await "status names the endpoint" 30 \
 	equals mcpserver mc-agents .status.endpoint "http://mc-agents-mcp-server.${NAMESPACE}.svc:3000/mcp"
 await "mcpserver/mc-agents is Ready" 240 \
 	equals mcpserver mc-agents '.status.conditions[?(@.type=="Ready")].status' True
+# Ready and the phase are two readings of one thing, and a Ready-only check is blind to the one
+# going stale. Pending is the reading a unit test cannot reach -- it is the Deployment not yet in
+# the operator's cache -- so a real API server is the only place the pair can be held to each other.
+equals mcpserver mc-agents .status.phase Running || {
+	echo "mcpserver/mc-agents is Ready and $(field mcpserver mc-agents .status.phase), want Running" >&2
+	exit 1
+}
+echo "ok: the server is Running beside Ready"
 k annotate mcpserver mc-agents verify/touched="$(date +%s)" --overwrite
 sleep 5
 if [[ "$(field secret mc-agents-mcp-server-auth .metadata.uid)" != "${token_uid}" ]]; then

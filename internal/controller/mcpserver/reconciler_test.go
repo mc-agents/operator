@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -99,6 +100,15 @@ func (h *harness) get(t *testing.T, name string, obj client.Object) error {
 	return h.client.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: name}, obj)
 }
 
+func (h *harness) server(t *testing.T, name string) v1alpha1.MCPServer {
+	t.Helper()
+	var server v1alpha1.MCPServer
+	if err := h.get(t, name, &server); err != nil {
+		t.Fatal(err)
+	}
+	return server
+}
+
 func TestTheGeneratedTokenIsMadeOnceAndKept(t *testing.T) {
 	h := newHarness(t, newServer())
 	h.reconcile(t)
@@ -165,6 +175,9 @@ func TestAServerPodTheKubeletCannotStartNamesTheReason(t *testing.T) {
 	ready := meta.FindStatusCondition(live.Status.Conditions, v1alpha1.ConditionReady)
 	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != "ImagePullBackOff" {
 		t.Fatalf("Ready is %+v, want False/ImagePullBackOff", ready)
+	}
+	if live.Status.Phase != v1alpha1.MCPServerPhaseFailed {
+		t.Fatalf("phase got %q, want Failed", live.Status.Phase)
 	}
 	if !strings.Contains(ready.Message, "0.55.o") {
 		t.Fatalf("Ready message %q does not carry what the kubelet said", ready.Message)
@@ -294,4 +307,180 @@ func envVar(c corev1.Container, name string) corev1.EnvVar {
 		}
 	}
 	return corev1.EnvVar{}
+}
+
+// One row per state the server can be in, with the inputs that put it there, and the cross-check
+// that is the reason for doing both in one table: Running and Ready=True are one moment. A branch
+// that moves the phase without the condition, or the condition without the phase, fails here
+// rather than reaching a cluster as an MCPServer printing Running next to Ready False.
+func TestEveryPhaseIsReachedAndSaysWhatReadyDoes(t *testing.T) {
+	blocked := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "mc-agents-mcp-server-7d9f8b6c5-x2k9q", Namespace: namespace},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  mcpserverspec.ContainerName,
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "no such tag"}},
+			}},
+		},
+	}
+	now := metav1.Now()
+	draining := *blocked.DeepCopy()
+	draining.DeletionTimestamp = &now
+
+	cases := []struct {
+		name       string
+		deployment *appsv1.Deployment
+		pods       []corev1.Pod
+		phase      v1alpha1.MCPServerPhase
+		reason     string
+	}{{
+		name:   "the Deployment is not in view yet",
+		phase:  v1alpha1.MCPServerPhasePending,
+		reason: "Progressing",
+	}, {
+		name:       "the Deployment is there and its pod is coming up",
+		deployment: deployment(1, 1, 0),
+		phase:      v1alpha1.MCPServerPhaseStarting,
+		reason:     "Progressing",
+	}, {
+		// Recreate: the pod that is available belongs to the spec before this one, so the server
+		// an agent would reach is not the server the spec asks for.
+		name:       "a new generation the Deployment controller has not acted on",
+		deployment: deployment(2, 1, 1),
+		phase:      v1alpha1.MCPServerPhaseStarting,
+		reason:     "Progressing",
+	}, {
+		name:       "a pod is available",
+		deployment: deployment(1, 1, 1),
+		phase:      v1alpha1.MCPServerPhaseRunning,
+		reason:     "Available",
+	}, {
+		name:       "the kubelet cannot bring the pod up",
+		deployment: deployment(1, 1, 0),
+		pods:       []corev1.Pod{blocked},
+		phase:      v1alpha1.MCPServerPhaseFailed,
+		reason:     "ImagePullBackOff",
+	}, {
+		name:       "the rollout has stalled",
+		deployment: stalled(deployment(1, 1, 0)),
+		phase:      v1alpha1.MCPServerPhaseFailed,
+		reason:     "ProgressDeadlineExceeded",
+	}, {
+		// The Recreate strategy takes the old pod down before the new one goes up, and that pod
+		// crash-looping on its way out is not what the new spec is doing.
+		name:       "the pod on its way out is blocked",
+		deployment: deployment(2, 1, 0),
+		pods:       []corev1.Pod{draining},
+		phase:      v1alpha1.MCPServerPhaseStarting,
+		reason:     "Progressing",
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := observe(newServer(), tc.deployment, tc.pods)
+			if got.phase != tc.phase {
+				t.Errorf("phase got %q, want %q", got.phase, tc.phase)
+			}
+			if reason := got.ready(1).Reason; reason != tc.reason {
+				t.Errorf("Ready reason got %q, want %q", reason, tc.reason)
+			}
+		})
+	}
+}
+
+// The one place the two answers are tied, checked where the tie is made rather than at every call
+// site that could forget it: Running is the server accepting bots, and that is the only phase a
+// reader waiting on Ready should be let through by.
+func TestOnlyRunningReadsAsReady(t *testing.T) {
+	for _, phase := range []v1alpha1.MCPServerPhase{
+		v1alpha1.MCPServerPhasePending,
+		v1alpha1.MCPServerPhaseStarting,
+		v1alpha1.MCPServerPhaseRunning,
+		v1alpha1.MCPServerPhaseFailed,
+	} {
+		ready := observation{phase: phase, reason: "Reason", message: "message"}.ready(7)
+		want := metav1.ConditionFalse
+
+		if phase == v1alpha1.MCPServerPhaseRunning {
+			want = metav1.ConditionTrue
+		}
+		if ready.Status != want {
+			t.Errorf("phase %q reads as Ready %q, want %q", phase, ready.Status, want)
+		}
+		if ready.ObservedGeneration != 7 || ready.Reason != "Reason" || ready.Message != "message" {
+			t.Errorf("phase %q lost what it was built with: %+v", phase, ready)
+		}
+	}
+}
+
+// What observe worked out has to survive the trip into status, and Ready has to land beside it:
+// the two are written in one call, and a status that carries only one of them is the disagreement
+// the phase exists to avoid.
+func TestThePhaseFollowsTheDeploymentIntoStatus(t *testing.T) {
+	h := newHarness(t, newServer())
+	h.reconcile(t)
+
+	server := h.server(t, "mc-agents")
+	if server.Status.Phase != v1alpha1.MCPServerPhaseStarting {
+		t.Fatalf("phase after the first reconcile got %q, want Starting", server.Status.Phase)
+	}
+
+	var deployment appsv1.Deployment
+	if err := h.get(t, "mc-agents-mcp-server", &deployment); err != nil {
+		t.Fatal(err)
+	}
+	deployment.Status = appsv1.DeploymentStatus{ObservedGeneration: deployment.Generation, AvailableReplicas: 1}
+	if err := h.client.Status().Update(context.Background(), &deployment); err != nil {
+		t.Fatal(err)
+	}
+	h.reconcile(t)
+
+	server = h.server(t, "mc-agents")
+	if server.Status.Phase != v1alpha1.MCPServerPhaseRunning {
+		t.Fatalf("phase with an available pod got %q, want Running", server.Status.Phase)
+	}
+	ready := meta.FindStatusCondition(server.Status.Conditions, v1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready is %+v beside a Running phase", ready)
+	}
+}
+
+// Failed is also what the operator's own failures read as: a server whose token cannot be minted
+// has no pod coming and never will, and Pending would leave it looking like one more reconcile
+// would fix it.
+func TestAServerWhoseTokenCannotBeMintedIsFailed(t *testing.T) {
+	h := newHarness(t, newServer())
+	h.under.token = func() (string, error) { return "", errors.New("no entropy") }
+
+	req := ctrl.Request{NamespacedName: client.ObjectKey{Namespace: namespace, Name: "mc-agents"}}
+	if _, err := h.under.Reconcile(context.Background(), req); err == nil {
+		t.Fatal("a token that cannot be generated reconciled without error")
+	}
+
+	server := h.server(t, "mc-agents")
+	if server.Status.Phase != v1alpha1.MCPServerPhaseFailed {
+		t.Fatalf("phase got %q, want Failed", server.Status.Phase)
+	}
+	ready := meta.FindStatusCondition(server.Status.Conditions, v1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != "TokenFailed" {
+		t.Fatalf("Ready is %+v, want False/TokenFailed beside the Failed phase", ready)
+	}
+}
+
+func deployment(generation, observed int64, available int32) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Generation: generation},
+		Status:     appsv1.DeploymentStatus{ObservedGeneration: observed, AvailableReplicas: available},
+	}
+}
+
+func stalled(d *appsv1.Deployment) *appsv1.Deployment {
+	d.Status.Conditions = []appsv1.DeploymentCondition{{
+		Type:    appsv1.DeploymentProgressing,
+		Status:  corev1.ConditionFalse,
+		Reason:  "ProgressDeadlineExceeded",
+		Message: `ReplicaSet "mc-agents-mcp-server-7d9f8b6c5" has timed out progressing`,
+	}}
+	return d
 }
