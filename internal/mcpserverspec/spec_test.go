@@ -78,6 +78,35 @@ func TestTheLogFormatReachesTheContainerOnlyWhenSet(t *testing.T) {
 	}
 }
 
+// The profile is how every bot join-server creates gets its image and tag. An empty
+// MCP_BOTS_PROFILE_NAME is not the same as an absent one on the reader's side: it would name a
+// profile called "" and fail every join instead of falling back to the default profile.
+func TestTheProfileTheServerGivesItsBotsReachesTheContainerOnlyWhenNamed(t *testing.T) {
+	server := newServer()
+	for _, name := range []string{"MCP_BOTS_PROFILE_KIND", "MCP_BOTS_PROFILE_NAME"} {
+		if env := envVar(mcpserverspec.Deployment(server, mcpserverspec.Defaults{}), name); env != nil {
+			t.Fatalf("no profileRef still set %+v; the variable has to be absent, not empty", env)
+		}
+	}
+
+	server.Spec.Bots.ProfileRef = &v1alpha1.ProfileRef{Name: "slow"}
+	deployment := mcpserverspec.Deployment(server, mcpserverspec.Defaults{})
+	// A ref written without a kind is a namespaced profile; the CRD default says so and nothing
+	// re-reads it here.
+	if kind := envVar(deployment, "MCP_BOTS_PROFILE_KIND"); kind == nil || kind.Value != string(v1alpha1.ProfileKindNamespaced) {
+		t.Errorf("MCP_BOTS_PROFILE_KIND is %+v, want %s", kind, v1alpha1.ProfileKindNamespaced)
+	}
+	if name := envVar(deployment, "MCP_BOTS_PROFILE_NAME"); name == nil || name.Value != "slow" {
+		t.Errorf("MCP_BOTS_PROFILE_NAME is %+v, want slow", name)
+	}
+
+	server.Spec.Bots.ProfileRef.Kind = v1alpha1.ProfileKindCluster
+	kind := envVar(mcpserverspec.Deployment(server, mcpserverspec.Defaults{}), "MCP_BOTS_PROFILE_KIND")
+	if kind == nil || kind.Value != string(v1alpha1.ProfileKindCluster) {
+		t.Errorf("MCP_BOTS_PROFILE_KIND is %+v, want %s; a cluster profile read as a namespaced one is not there", kind, v1alpha1.ProfileKindCluster)
+	}
+}
+
 func envVar(deployment *appsv1.Deployment, name string) *corev1.EnvVar {
 	for _, e := range deployment.Spec.Template.Spec.Containers[0].Env {
 		if e.Name == name {

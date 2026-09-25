@@ -14,10 +14,10 @@ import (
 
 type options struct {
 	watchNamespaces namespaces
-	workers        int
-	resyncPeriod   time.Duration
-	metricsAddress string
-	probeAddress   string
+	workers         int
+	resyncPeriod    time.Duration
+	metricsAddress  string
+	probeAddress    string
 
 	leaderElect              bool
 	leaderElectID            string

@@ -77,6 +77,29 @@ This is the cert-manager and Strimzi shape. Two tenants get two servers with two
 see each other's bots, and a namespace admin can do all of it through the built-in `admin` and
 `edit` roles, which the chart aggregates the mc-agents resources into.
 
+Those two aggregated ClusterRoles carry the release's fullname, so under the install above they are
+`mc-agents-operator-edit` and `mc-agents-operator-view`, not anything named after the API group.
+`-edit` carries `rbac.authorization.k8s.io/aggregate-to-admin` and `aggregate-to-edit`, and grants
+create, update, patch, delete and deletecollection on `mcpservers`, `minecraftbots`,
+`minecraftbotpools`, `minecraftbotpools/scale` and `minecraftbotprofiles`; `-view` carries
+`aggregate-to-view` and grants get, list and watch on the same set without the scale subresource.
+Nothing binds either one: the built-in roles pick the rules up, so whoever already holds `admin` or
+`edit` in a namespace can run bots there and needs no grant from you. `ClusterMinecraftBotProfile`
+is in neither, being cluster-scoped — the tags every tenant falls back to stay with whoever holds
+the cluster. `rbac.create=false` drops both, along with the operator's own rules.
+
+The operator watches every namespace, and the chart's `watchNamespaces` narrows it to a list;
+empty, the default, is all of them. What narrows is the informers and nothing else — the
+ClusterRole stays cluster-wide, so widening a release again is a change to the value rather than to
+its permissions. The list names the tenants' namespaces; `mc-agents-system` holds the operator and
+no MCPServer or bot of its own.
+
+Leaving a tenant namespace out of that list is quiet. Nothing watches it, so an MCPServer or a
+MinecraftBot created there is never reconciled: no pod, no status, no events, no error anywhere.
+The object sits exactly as it was applied, which reads as a deploy taking its time rather than as a
+namespace nobody is listening to. The operator logs the list it started with, `namespaces=all` when
+it is empty, and that is the thing to read before going looking anywhere else.
+
 ### MCPServer
 
 ```yaml
@@ -157,6 +180,15 @@ A profile tag still gets `-mc<minecraftVersion>` appended, as the flags do; `spe
 bot is used as written. Labels and annotations merge key by key, every other field is taken whole.
 `status.profiles` lists the profiles a bot was built from. A bot that names a profile which does not
 exist is `Failed` rather than quietly built from the defaults.
+
+Layer 4 is the operator's flags, which the chart fills from `bots.registry`, `bots.fabricTag`,
+`bots.azaleaTag` and `bots.assetFetcherImage`: the releases this operator release was verified
+against, under everything. Layer 3 is where a cluster pins its own. `defaultProfile.create` renders
+the `ClusterMinecraftBotProfile` named `default` from `defaultProfile.spec`, which is a
+`MinecraftBotProfile` spec, so the tags a whole cluster's bots fall back to live in the values file
+with the rest of the install rather than in a manifest applied beside it. Turn it on in a later
+`helm upgrade` and not on the first install: Helm validates every rendered object before it creates
+any, and on a first install the CRD this one needs ships in the same release and does not exist yet.
 
 Changing a profile rebuilds the pods of the bots that use it, as changing a Deployment's template
 does.

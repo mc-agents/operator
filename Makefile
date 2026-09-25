@@ -18,6 +18,9 @@ K3D_CONTEXT := k3d-$(K3D_CLUSTER)
 NAMESPACE ?= mc-agents-system
 # Where the verify run puts its MCPServer, profiles and bots: a tenant, never the operator's own.
 TENANT ?= mc-agents-verify
+# The second tenant, which the run needs to show that neither of them sees the other's bots or
+# token. The script creates it; this is here so both names are set in one place.
+TENANT_B ?= $(TENANT)-b
 # The published release the upgrade verification starts from: the newest VERSION below this one
 # in the history, unless given.
 FROM ?= $(shell bash hack/previous-version.sh)
@@ -126,7 +129,7 @@ k3d-deploy: k3d-import ## Build, import and install the operator into the k3d cl
 k3d-verify: k3d-guard ## Apply the fixtures in a tenant namespace and assert the operator reconciles them.
 	kubectl --context $(K3D_CONTEXT) get namespace $(TENANT) >/dev/null 2>&1 || \
 		kubectl --context $(K3D_CONTEXT) create namespace $(TENANT)
-	bash hack/verify-k3d.sh $(K3D_CONTEXT) $(TENANT)
+	bash hack/verify-k3d.sh $(K3D_CONTEXT) $(TENANT) $(TENANT_B)
 
 # On a cluster with no operator yet: the published chart FROM is installed first, and the point is
 # what happens to its objects when the source chart replaces it.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-k3d.sh [--from <version>] <kube context> <tenant namespace>
+# verify-k3d.sh [--from <version>] <kube context> <tenant namespace> [<second tenant namespace>]
 #
 # Without --from: the operator is installed, and every fixture is driven through what the operator
 # promises about it. With --from: the published release of that version is installed first, the
@@ -27,6 +27,10 @@ while [[ $# -gt 0 ]]; do
 done
 CONTEXT="${1:?kube context}"
 NAMESPACE="${2:?namespace}"
+# The second tenant, for the checks that need two of them. Derived rather than demanded, so a run
+# by hand takes the arguments it always took, and created where it is first used rather than here,
+# since --from returns before any of it matters.
+NAMESPACE_B="${3:-${NAMESPACE}-b}"
 ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")"
 # Objects only this script has a use for: profiles whose tags are labels rather than images, a
 # bot with nowhere to dial, an MCPServer on the generated-token path. examples/ is for people.
@@ -68,6 +72,18 @@ equals() { [[ "$(field "$1" "$2" "$3")" == "$4" ]]; }
 
 contains() { [[ "$(field "$1" "$2" "$3")" == *"$4"* ]]; }
 
+# What a deleted owner leaves behind is collected by the API server on its own schedule and not by
+# the operator, so an object being gone is awaited rather than read once.
+gone() { ! k get "$1" "$2"; }
+
+# The same readers against the second tenant. Its objects are read and compared with the first
+# tenant's, never driven, so only the readers are doubled.
+k_b() { kubectl --context "${CONTEXT}" -n "${NAMESPACE_B}" "$@"; }
+
+field_b() { k_b get "$1" "$2" -o jsonpath="{$3}" 2>/dev/null; }
+
+equals_b() { [[ "$(field_b "$1" "$2" "$3")" == "$4" ]]; }
+
 # await Running, and fail at once should Failed show up on the way there.
 await_running() {
 	local name="$1" timeout="$2"
@@ -107,10 +123,25 @@ refused() {
 # curl pod: the runner has curl and python3, and a pod would be one more image to pull. The local
 # port is whatever is free: a developer's machine already forwards a server of its own on the
 # obvious number.
-MCP_LOCAL_PORT="${MCP_LOCAL_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}"
+free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+MCP_LOCAL_PORT="${MCP_LOCAL_PORT:-$(free_port)}"
 MCP_BASE="http://127.0.0.1:${MCP_LOCAL_PORT}/mcp"
 mcp_token=""
 mcp_session=""
+forward_pid=""
+
+# mcp_forward <namespace> <local port>: put that namespace's MCP Service on a local port and point
+# the helpers below at it. The caller kills ${forward_pid} when it is done with the server; every
+# tenant is forwarded in turn, on a port of its own, so a lingering forward cannot answer for the
+# tenant that came after it.
+mcp_forward() {
+	local ns="$1" port="$2"
+	MCP_BASE="http://127.0.0.1:${port}/mcp"
+	kubectl --context "${CONTEXT}" -n "${ns}" port-forward service/mc-agents-mcp-server "${port}:3000" >/dev/null 2>&1 &
+	forward_pid=$!
+	await "the MCP port of ${ns} is forwarded to :${port}" 30 \
+		curl -sf -o /dev/null "http://127.0.0.1:${port}/actuator/health/liveness"
+}
 
 mcp_post() {
 	curl -sS -X POST "${MCP_BASE}" \
@@ -121,8 +152,10 @@ mcp_post() {
 		-d "$1"
 }
 
+# mcp_open <namespace>: the bearer token is that namespace's own, so the same session helpers drive
+# either tenant's server.
 mcp_open() {
-	mcp_token="$(k get secret mc-agents-mcp-server-auth -o jsonpath='{.data.token}' | base64 -d)"
+	mcp_token="$(kubectl --context "${CONTEXT}" -n "$1" get secret mc-agents-mcp-server-auth -o jsonpath='{.data.token}' | base64 -d)"
 	mcp_session="$(curl -sS -i -X POST "${MCP_BASE}" \
 		-H "Authorization: Bearer ${mcp_token}" \
 		-H 'Content-Type: application/json' \
@@ -134,7 +167,7 @@ mcp_open() {
 		return 1
 	fi
 	mcp_post '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null
-	echo "ok: an MCP session is open with the token from the Secret"
+	echo "ok: an MCP session is open with the token from the Secret in $1"
 }
 
 # mcp_call <tool> <json arguments>: prints the text the tool answered with. Exit 1 when the tool
@@ -157,6 +190,45 @@ sys.exit(1 if result.get("isError") else 0)
 }
 
 requested_by_server() { k get minecraftbots -l mc-agents.junhyung.cloud/requested-by=mcp-server --no-headers 2>/dev/null; }
+
+given_back() { [[ -z "$(requested_by_server)" ]]; }
+
+# join_round <kind> <bot> <attempts> <timeout ms>: ask the server for a bot of that kind and give it
+# back. join-server asks the operator for a bot, waits for its hello, and only then sends it to the
+# game server. A host that does not resolve fails the second half, so the failure has to say the bot
+# linked and the server refused it; one that never linked would say so, and would have been given
+# back before this could look at it. A join that says the bot is still starting is not a failure:
+# the same call waits for the same bot, which is what the attempts are for.
+join_round() {
+	local kind="$1" bot="$2" attempts="$3" timeout_ms="$4" joined="" left="" attempt
+	for ((attempt = 0; attempt < attempts; attempt++)); do
+		if joined="$(mcp_call join-server "{\"bot\":\"${bot}\",\"kind\":\"${kind}\",\"host\":\"nowhere.invalid\",\"port\":25565,\"timeoutMs\":${timeout_ms}}")"; then
+			echo "join-server succeeded against a host that does not resolve: ${joined}" >&2
+			return 1
+		fi
+		[[ "${joined}" == *"still starting"* ]] || break
+		sleep 5
+	done
+	if [[ "${joined}" != *"did not accept the connection"* || "${joined}" != *"could not join nowhere.invalid"* ]]; then
+		echo "join-server (${kind}) failed for another reason than the game server: ${joined}" >&2
+		return 1
+	fi
+	echo "ok: join-server linked the ${kind} bot and the game server refused it"
+	if [[ "$(requested_by_server | wc -l | tr -d ' ')" != 1 ]]; then
+		echo "want one MinecraftBot labelled requested-by=mcp-server, have: $(requested_by_server)" >&2
+		return 1
+	fi
+	echo "ok: a MinecraftBot labelled mc-agents.junhyung.cloud/requested-by=mcp-server appeared"
+	left="$(mcp_call leave-server "{\"bot\":\"${bot}\"}")" || {
+		echo "leave-server failed: ${left}" >&2
+		return 1
+	}
+	if [[ "${left}" != *"given back"* ]]; then
+		echo "leave-server did not give the bot back: ${left}" >&2
+		return 1
+	fi
+	await "the ${kind} bot join-server asked for is deleted" 60 given_back
+}
 
 crd_is_helms() { [[ "$(kubectl --context "${CONTEXT}" get crd "$1.mc-agents.junhyung.cloud" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}')" == Helm ]]; }
 
@@ -452,11 +524,9 @@ EOF
 await "minecraftbot/linked is Linked" 180 equals minecraftbot linked .status.link Linked
 
 echo "== the server names it, starts a bot on request and takes that bot back"
-k port-forward service/mc-agents-mcp-server "${MCP_LOCAL_PORT}:3000" >/dev/null 2>&1 &
-forward_pid=$!
+mcp_forward "${NAMESPACE}" "${MCP_LOCAL_PORT}"
 trap 'kill "${forward_pid}" 2>/dev/null || true' EXIT
-await "the MCP port is forwarded to :${MCP_LOCAL_PORT}" 30 curl -sf -o /dev/null "http://127.0.0.1:${MCP_LOCAL_PORT}/actuator/health/liveness"
-mcp_open
+mcp_open "${NAMESPACE}"
 listed="$(mcp_call list-bots '{}')" || {
 	echo "list-bots failed: ${listed}" >&2
 	exit 1
@@ -466,50 +536,181 @@ if [[ "${listed}" != *"linked (azalea)"* ]]; then
 	exit 1
 fi
 echo "ok: list-bots names linked"
-# join-server asks the operator for a bot, waits for its hello, and only then sends it to the game
-# server. A host that does not resolve fails the second half, so the failure has to say the bot
-# linked and the server refused it; one that never linked would say so, and would have been given
-# back before this could look at it. A join that says the bot is still starting is not a failure:
-# the same call waits for the same bot.
-joined=""
-for _ in 1 2 3 4 5 6; do
-	if joined="$(mcp_call join-server '{"bot":"probe","kind":"azalea","host":"nowhere.invalid","port":25565,"timeoutMs":20000}')"; then
-		echo "join-server succeeded against a host that does not resolve: ${joined}" >&2
-		exit 1
+join_round azalea probe 6 20000
+# The fabric bot is the other half of the same path, and it is not free: a 1.7GiB image, an init
+# container that fetches the assets, and about ninety seconds from pod to hello once both are on
+# the node. That is most of a CI run on a node meeting the image for the first time, so it is asked
+# for rather than assumed: VERIFY_FABRIC=1 make verify.
+if [[ -n "${VERIFY_FABRIC:-}" ]]; then
+	join_round fabric probe-fabric 8 120000
+fi
+kill "${forward_pid}" 2>/dev/null || true
+trap - EXIT
+
+echo "== a second tenant gets a server of its own and neither tenant reaches the other"
+# The namespace is the boundary the whole design rests on. Everything here is read from the second
+# tenant and compared with the first, which is still standing.
+kubectl --context "${CONTEXT}" get namespace "${NAMESPACE_B}" >/dev/null 2>&1 ||
+	kubectl --context "${CONTEXT}" create namespace "${NAMESPACE_B}"
+k_b apply -f "${FIXTURES}/mcpserver.yaml"
+if [[ -n "${MCP_SERVER_TAG:-}" ]]; then
+	k_b patch mcpserver mc-agents --type merge -p "{\"spec\":{\"image\":{\"tag\":\"${MCP_SERVER_TAG}\"}}}"
+fi
+await "the second tenant's token secret exists" 60 k_b get secret mc-agents-mcp-server-auth
+await "mcpserver/mc-agents in ${NAMESPACE_B} is Ready" 300 \
+	equals_b mcpserver mc-agents '.status.conditions[?(@.type=="Ready")].status' True
+
+# Two tokens and not one: a token taken from anything the two tenants share would hand either of
+# them the other's MCP port, and the port is all the token guards.
+token_a="$(field secret mc-agents-mcp-server-auth .data.token)"
+token_b="$(field_b secret mc-agents-mcp-server-auth .data.token)"
+if [[ -z "${token_a}" || -z "${token_b}" || "${token_a}" == "${token_b}" ]]; then
+	echo "the two tenants' generated tokens are not two different tokens" >&2
+	exit 1
+fi
+echo "ok: each tenant's server holds a token of its own"
+
+# All a server may do is its Role in its own namespace. kubectl auth can-i exits 1 for "no", which
+# errexit would read as this script failing, so both answers are asked for inside a condition.
+allowed() {
+	kubectl --context "${CONTEXT}" auth can-i "$1" minecraftbots.mc-agents.junhyung.cloud \
+		--as "system:serviceaccount:$2:mc-agents-mcp-server" -n "$3" --quiet
+}
+# A ClusterRole, or a RoleBinding written into the wrong namespace, shows up here and in no other
+# assertion: both leave a Role that reads correctly in the tenant it belongs to.
+role_is_tenant_local() {
+	local tenant="$1" other="$2"
+	if ! allowed create "${tenant}" "${tenant}"; then
+		echo "the server of ${tenant} cannot create bots in its own namespace" >&2
+		return 1
 	fi
-	[[ "${joined}" == *"still starting"* ]] || break
-	sleep 5
-done
-if [[ "${joined}" != *"did not accept the connection"* || "${joined}" != *"could not join nowhere.invalid"* ]]; then
-	echo "join-server failed for another reason than the game server: ${joined}" >&2
-	exit 1
-fi
-echo "ok: join-server linked the bot and the game server refused it"
-if [[ "$(requested_by_server | wc -l | tr -d ' ')" != 1 ]]; then
-	echo "want one MinecraftBot labelled requested-by=mcp-server, have: $(requested_by_server)" >&2
-	exit 1
-fi
-echo "ok: a MinecraftBot labelled mc-agents.junhyung.cloud/requested-by=mcp-server appeared"
-left="$(mcp_call leave-server '{"bot":"probe"}')" || {
-	echo "leave-server failed: ${left}" >&2
+	if allowed create "${tenant}" "${other}"; then
+		echo "the server of ${tenant} can create bots in ${other}" >&2
+		return 1
+	fi
+	echo "ok: the server of ${tenant} creates bots in ${tenant} and nowhere else"
+}
+equals_b role mc-agents-mcp-server '.rules[*].resources[*]' minecraftbots || {
+	echo "the second tenant's Role grants '$(field_b role mc-agents-mcp-server '.rules[*].resources[*]')', want minecraftbots alone" >&2
 	exit 1
 }
-if [[ "${left}" != *"given back"* ]]; then
-	echo "leave-server did not give the bot back: ${left}" >&2
+equals_b rolebinding mc-agents-mcp-server '.subjects[*].namespace' "${NAMESPACE_B}" || {
+	echo "the second tenant's RoleBinding binds a ServiceAccount of $(field_b rolebinding mc-agents-mcp-server '.subjects[*].namespace')" >&2
+	exit 1
+}
+role_is_tenant_local "${NAMESPACE}" "${NAMESPACE_B}"
+role_is_tenant_local "${NAMESPACE_B}" "${NAMESPACE}"
+
+# The bot-link port has no authentication of its own, so this policy is the whole of what keeps one
+# tenant's bot pods off the other's server. The rendered selectors are what is read, not traffic: a
+# rule that named no namespace at all would admit the cluster and still carry the right pod label.
+policy_admits_only() {
+	local ns="$1" namespaces pods
+	namespaces="$(kubectl --context "${CONTEXT}" -n "${ns}" get networkpolicy mc-agents-mcp-server \
+		-o jsonpath='{.spec.ingress[*].from[*].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name}')"
+	pods="$(kubectl --context "${CONTEXT}" -n "${ns}" get networkpolicy mc-agents-mcp-server \
+		-o jsonpath='{.spec.ingress[*].from[*].podSelector.matchLabels.app\.kubernetes\.io/name}')"
+	if [[ "${namespaces}" != "${ns}" ]]; then
+		echo "the policy in ${ns} admits namespaces '${namespaces}', want ${ns} alone" >&2
+		return 1
+	fi
+	if [[ "${pods}" != minecraft-bot ]]; then
+		echo "the policy in ${ns} admits pods '${pods}', want minecraft-bot alone" >&2
+		return 1
+	fi
+	echo "ok: on the bot-link port the policy in ${ns} admits ${ns}'s bot pods and nothing else"
+}
+policy_admits_only "${NAMESPACE}"
+policy_admits_only "${NAMESPACE_B}"
+
+# And the server itself, asked what bots it has. A server that listed MinecraftBots outside its own
+# namespace, or two servers sharing a registry, would name the first tenant's bot here. The match is
+# on "linked (azalea)" rather than the bare name because an empty listing says no bots are linked,
+# which carries the word.
+mcp_forward "${NAMESPACE_B}" "$(free_port)"
+trap 'kill "${forward_pid}" 2>/dev/null || true' EXIT
+mcp_open "${NAMESPACE_B}"
+rc=0
+listed_b="$(mcp_call list-bots '{}')" || rc=$?
+if ((rc == 2)); then
+	echo "list-bots against ${NAMESPACE_B} did not answer: ${listed_b}" >&2
 	exit 1
 fi
-given_back() { [[ -z "$(requested_by_server)" ]]; }
-await "the bot join-server asked for is deleted" 60 given_back
+if [[ "${listed_b}" == *"linked (azalea)"* ]]; then
+	echo "the server in ${NAMESPACE_B} names a bot of ${NAMESPACE}: ${listed_b}" >&2
+	exit 1
+fi
+echo "ok: the second tenant's server does not see ${NAMESPACE}'s bots"
 kill "${forward_pid}" 2>/dev/null || true
 trap - EXIT
 k delete minecraftbot linked --wait=true
 
-echo "== deleting the MCPServer takes its objects"
+echo "== deleting the MCPServer takes every object it owns"
 k delete mcpserver mc-agents --wait=true
-await "deployment/mc-agents-mcp-server is gone" 60 \
-	bash -c "! kubectl --context ${CONTEXT} -n ${NAMESPACE} get deployment mc-agents-mcp-server"
+# Both Secrets are in the list because both are the operator's own work: it made them, it owns
+# them, and a tenant that deletes its server is asking for the tokens to go too. The Secret a
+# tenant brought itself is the other case, below.
+for object in \
+	deployment/mc-agents-mcp-server \
+	service/mc-agents-mcp-server \
+	service/mc-agents-mcp-server-bots \
+	networkpolicy/mc-agents-mcp-server \
+	role/mc-agents-mcp-server \
+	rolebinding/mc-agents-mcp-server \
+	serviceaccount/mc-agents-mcp-server \
+	secret/mc-agents-mcp-server-auth \
+	secret/mc-agents-mcp-server-link; do
+	await "${object} is gone" 60 gone "${object%%/*}" "${object#*/}"
+done
+
+echo "== a token the operator did not make outlives the MCPServer"
+# spec.auth.existingSecret is the tenant's own Secret: the operator reads it, never owns it, and
+# has to leave it behind. Deleting it would cut off every agent holding that token, and unlike a
+# generated one it is not the operator's to make again.
+k apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: verify-byo-token
+stringData:
+  token: verify-byo
+EOF
+k apply -f - <<EOF
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MCPServer
+metadata:
+  name: byo
+spec:
+  auth:
+    existingSecret: verify-byo-token
+EOF
+await "deployment/byo-mcp-server exists" 60 k get deployment byo-mcp-server
+await "secret/byo-mcp-server-link exists" 60 k get secret byo-mcp-server-link
+# Ownership is what decides which of the two goes, so it is read before the delete rather than
+# inferred from it afterwards.
+if [[ -n "$(field secret verify-byo-token '.metadata.ownerReferences[*].name')" ]]; then
+	echo "the operator took ownership of the Secret the tenant brought" >&2
+	exit 1
+fi
+equals secret byo-mcp-server-link '.metadata.ownerReferences[*].name' byo || {
+	echo "secret/byo-mcp-server-link is owned by nothing, so no delete will ever collect it" >&2
+	exit 1
+}
+if k get secret byo-mcp-server-auth >/dev/null 2>&1; then
+	echo "the operator generated byo-mcp-server-auth although spec.auth.existingSecret names a token" >&2
+	exit 1
+fi
+k delete mcpserver byo --wait=true
+await "secret/byo-mcp-server-link is gone" 60 gone secret byo-mcp-server-link
+equals secret verify-byo-token .data.token "$(printf '%s' verify-byo | base64)" || {
+	echo "the Secret the tenant brought did not survive its MCPServer" >&2
+	exit 1
+}
+echo "ok: the generated token went with the server and the tenant's own token stayed"
+k delete secret verify-byo-token --wait=true
 
 echo "== cleaning up"
 k delete minecraftbotpool scouts --wait=true
+k_b delete mcpserver mc-agents --wait=true
 
 echo "all checks passed"
