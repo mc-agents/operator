@@ -203,9 +203,13 @@ jobs:
             ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}
             ${{ env.IMAGE }}:${{ steps.tag.outputs.version }}
             ${{ env.IMAGE }}:latest
-          # GitHub's cache, not the registry: the registry sits behind Cloudflare, which cuts an
-          # upload at 100MB, and the Go build cache layer is past that once it changes and has to be
-          # sent whole -- the publish died on it with a 499 mid-PUT. A cache miss costs a compile.
+          # GitHub's cache, not the registry, and the reason has been replaced rather than removed.
+          # It was Cloudflare in front of the registry cutting an upload at 100MB, which the Go
+          # build cache layer passes once it changes and has to be sent whole -- the publish died on
+          # it with a 499 mid-PUT. Cloudflare is gone and the registry is now reached over one home
+          # uplink, where a cache export beside the image is what made bot-fabric's publish fail
+          # three times running. Either way it does not belong in the registry. A miss costs a
+          # compile, which is why there is a cache here at all.
           cache-from: type=gha,scope=image
           cache-to: type=gha,scope=image,mode=max
 
