@@ -206,10 +206,12 @@ jobs:
           # GitHub's cache, not the registry, and the reason has been replaced rather than removed.
           # It was Cloudflare in front of the registry cutting an upload at 100MB, which the Go
           # build cache layer passes once it changes and has to be sent whole -- the publish died on
-          # it with a 499 mid-PUT. Cloudflare is gone and the registry is now reached over one home
-          # uplink, where a cache export beside the image is what made bot-fabric's publish fail
-          # three times running. Either way it does not belong in the registry. A miss costs a
-          # compile, which is why there is a cache here at all.
+          # it with a 499 mid-PUT. Cloudflare is gone, and the registry is now reached over one home
+          # uplink, where a cache export beside the image doubles what a publish sends. Either way
+          # it does not belong in the registry. A miss costs a compile, which is why there is one.
+          #
+          # What made bot-fabric's publishes fail was neither: Traefik's 60s readTimeout in front of
+          # Harbor cut every attempt at the same minute, and raising it is what fixed them.
           cache-from: type=gha,scope=image
           cache-to: type=gha,scope=image,mode=max
 
