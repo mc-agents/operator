@@ -139,6 +139,17 @@ func (b *DefaultBuilder) container(bot *v1alpha1.MinecraftBot, image string) cor
 			MountPath: assets.MountPath,
 			ReadOnly:  assets.ReadOnly,
 		})
+		// The window size, which is the resolution a frame is captured at. Not the size a
+		// screenshot comes back as -- that is the caller's, and the tool scales the capture to it --
+		// so what this buys is detail: a caller asking for 1920x1080 used to be handed an upscale of
+		// a 854x480 capture, because the client's own defaults are 854x480 and nothing overrode them.
+		// The entrypoint execs the client with "$@" on the end, so these reach it as its own
+		// arguments.
+		render := renderSpec(bot)
+		c.Args = []string{
+			"--width", strconv.Itoa(int(render.Width)),
+			"--height", strconv.Itoa(int(render.Height)),
+		}
 	}
 	return c
 }
@@ -205,9 +216,11 @@ func containerEnv(bot *v1alpha1.MinecraftBot) []corev1.EnvVar {
 		render := renderSpec(bot)
 		env = append(env,
 			corev1.EnvVar{Name: "MC_ASSETS_DIR", Value: assetDir(bot, assets)},
-			corev1.EnvVar{Name: "BOT_RENDER", Value: strconv.FormatBool(render.Enabled == nil || *render.Enabled)},
-			corev1.EnvVar{Name: "BOT_RENDER_WIDTH", Value: strconv.Itoa(int(render.Width))},
-			corev1.EnvVar{Name: "BOT_RENDER_HEIGHT", Value: strconv.Itoa(int(render.Height))},
+			// The virtual display, sized to the window that will fill it. The bot's own default is
+			// 1280x720x24, which left every pod drawing an 854x480 client into a root window half
+			// again as large and nothing using the rest.
+			corev1.EnvVar{Name: "BOT_SCREEN", Value: screen(render)},
+			corev1.EnvVar{Name: "BOT_RENDER_DISTANCE", Value: strconv.Itoa(int(render.Distance))},
 			corev1.EnvVar{Name: "BOT_FRAME_RATE_LIMIT", Value: strconv.Itoa(int(render.FrameRateLimit))},
 		)
 	}
@@ -227,6 +240,12 @@ func assetSpec(bot *v1alpha1.MinecraftBot) *v1alpha1.AssetCacheSpec {
 	return assets
 }
 
+// The same numbers the CRD defaults to, repeated here and kept in step with it on purpose. The API
+// server fills a field that is absent from a render block it can see, and does not invent the block
+// itself: a bot with no render at all arrives here empty, and a bot stored before `distance` existed
+// arrives with a zero where the schema now promises eight. Either way the pod has to be built from
+// a complete set, and the alternative -- treating zero as "the client's own default" -- is the
+// 1.7GiB pod this whole type exists to avoid.
 func renderSpec(bot *v1alpha1.MinecraftBot) *v1alpha1.RenderSpec {
 	render := bot.Spec.Render
 	if render == nil {
@@ -240,10 +259,19 @@ func renderSpec(bot *v1alpha1.MinecraftBot) *v1alpha1.RenderSpec {
 	if render.Height == 0 {
 		render.Height = 480
 	}
+	if render.Distance == 0 {
+		render.Distance = 8
+	}
 	if render.FrameRateLimit == 0 {
 		render.FrameRateLimit = 1
 	}
 	return render
+}
+
+// Xvfb's -screen argument. The depth is not a field: 24 is what a client expects to find and
+// nothing here has a use for another.
+func screen(render *v1alpha1.RenderSpec) string {
+	return fmt.Sprintf("%dx%dx24", render.Width, render.Height)
 }
 
 // The asset fetcher is published per Minecraft version, so a tag that does not already name one

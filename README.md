@@ -341,7 +341,8 @@ under *How a bot is told where to dial*. Adding to them is a change to that docu
 | `HEALTH_PORT` | port to serve `/healthz` and `/readyz` on (8080) |
 | `BOT_WORK_DIR` | writable scratch (`/work`); the root filesystem is read-only |
 | `MC_ASSETS_DIR` | fabric only, `<mountPath>/<minecraftVersion>` |
-| `BOT_RENDER`, `BOT_RENDER_WIDTH`, `BOT_RENDER_HEIGHT`, `BOT_FRAME_RATE_LIMIT` | fabric only |
+| `BOT_SCREEN` | fabric only: the virtual display, `<width>x<height>x24` from `spec.render` |
+| `BOT_RENDER_DISTANCE`, `BOT_FRAME_RATE_LIMIT` | fabric only, from `spec.render` |
 | `POD_NAME`, `POD_NAMESPACE`, `NODE_NAME` | for the bot's own logs |
 
 `/readyz` must not go green until the bot is linked. That is the only signal the operator has about
@@ -479,6 +480,41 @@ A release also states what it was verified against: `mcpServer.tag`, `bots.fabri
 its row to [`docs/compatibility.md`](docs/compatibility.md).
 
 ## Upgrading
+
+### from 0.24
+
+0.25 makes `spec.render` mean something. Three of its four settings never reached a bot: the
+operator sent `BOT_RENDER`, `BOT_RENDER_WIDTH` and `BOT_RENDER_HEIGHT`, no bot has ever read any of
+them, and `enabled: false` left the client rendering exactly as before. Meanwhile the two names a
+fabric bot does read were not sent at all. Each of the three things that follow needs an edit to
+objects already in the cluster.
+
+**`render.enabled` is gone, and a manifest that still sets it fails.** There is no mode in which a
+real client does not draw, so the field was a setting with nothing behind it; a bot that should not
+draw is `kind: azalea`. The new CRD is a structural schema, so an apply that carries the key is
+refused — `strict decoding error: unknown field "spec.render.enabled"` from kubectl, and a sync
+failure from Argo CD. Objects already stored keep working untouched. This repository's own
+`examples/minecraftbot-fabric.yaml` set `enabled: true` until 0.25, so anything copied from it needs
+the line removed, in `MinecraftBot`s, in a `MinecraftBotPool`'s template, in a
+`MinecraftBotProfile` or `ClusterMinecraftBotProfile`'s `fabric.render`, and in a values file's
+`defaultProfile.spec`.
+
+**`BOT_RENDER_DISTANCE` and `BOT_SCREEN` are now the operator's to set, so `spec.env` may no longer
+carry them.** Until 0.25 the render distance had no field, and writing the variable into `spec.env`
+was the only way to reach it — the documented answer to a fabric bot being OOM killed. Replace it
+with `render.distance`, which takes the same numbers. Two reasons not to leave it: a new apply is
+refused with `env names the operator sets are reserved`, and, worse, an object stored before the
+upgrade is not, and `spec.env` is still appended last. The pod then carries the name twice and the
+kubelet keeps the second, so the old hand-written value quietly wins and `render.distance` moves the
+pod without moving the client.
+
+**Every fabric pod is replaced once.** The environment the operator builds has changed, so the spec
+hash does, and the first reconcile after the upgrade recreates each fabric pod — which for a bot
+whose assets live in an `emptyDir` means fetching them again.
+
+Lastly, `render.distance` below 5 needs bot-fabric 0.78.0, which this release pins. Simulation
+distance will not go below 5, and an older bot answered a value under it by keeping the client's own
+initial 12 — raising the setting it was asked to lower.
 
 ### from 0.13
 

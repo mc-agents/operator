@@ -11,9 +11,15 @@ spec:
   linkTokenSecretRef:
     name: mc-agents-mcp-server-link
   render:
-    enabled: true
+    # The window the client draws into, and the virtual display sized to match it. This is the
+    # resolution frames are captured at, not the size a screenshot comes back as: the tool scales
+    # its capture to whatever the caller asked for, so raising this buys detail rather than a
+    # bigger image. Every pixel is software-rendered into system memory, so raise it on purpose.
     width: 854
     height: 480
+    # Chunks loaded and simulated, and the largest lever on this pod's memory: there is no graphics
+    # card, so every chunk mesh sits in system memory. A fresh client picks sixteen.
+    distance: 8
     # Ticks and frames are separate, so one frame a second still leaves networking, physics and
     # inventory running at full speed. Raise it only when a screenshot needs motion.
     frameRateLimit: 1
@@ -25,10 +31,12 @@ spec:
     readOnly: true
   # The operator's defaults, spelled out. Measured rather than budgeted: a bot in a flat world
   # with no resource pack sits at 1.7GiB, because under Xvfb there is no graphics card and every
-  # texture and chunk mesh is system memory.
+  # texture and chunk mesh is system memory. The limit was 3Gi until 0.22.0, where a bot that
+  # joined a server with a resource pack was OOM killed and left an X lock behind, so the restart
+  # failed on the display and nothing in the logs said memory.
   resources:
     requests:
       cpu: 500m
       memory: 2Gi
     limits:
-      memory: 3Gi
+      memory: 4Gi

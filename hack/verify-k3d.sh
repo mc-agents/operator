@@ -354,6 +354,53 @@ spec:
       value: "1"
 EOF
 )"
+# The render distance had no field before 0.25, so spec.env was the documented way to reach it and
+# plenty of clusters took it. The name is the operator's now, and an apply that still carries it has
+# to say so rather than be appended after the operator's own and silently win.
+refused "a bot setting the render distance the old way" "env names the operator sets are reserved" "$(cat <<'EOF'
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MinecraftBot
+metadata:
+  name: old-way
+spec:
+  kind: fabric
+  minecraftVersion: "26.1.2"
+  server:
+    host: nowhere.invalid
+  env:
+    - name: BOT_RENDER_DISTANCE
+      value: "2"
+EOF
+)"
+# And the field it was removed in favour of: a real client has no mode in which it does not draw,
+# so a manifest that still asks for one is a manifest to edit, not a setting to ignore. Checked with
+# --validate=strict spelled out rather than through refused() above, because this is the one refusal
+# here that is not the schema's own: an unknown field is pruned unless the apply asks for strict
+# field validation, and whether kubectl asks by default is a question about the client's version.
+not_drawing="$(
+	cat <<'EOF'
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MinecraftBot
+metadata:
+  name: not-drawing
+spec:
+  kind: fabric
+  minecraftVersion: "26.1.2"
+  render:
+    enabled: false
+  server:
+    host: nowhere.invalid
+EOF
+)"
+if out="$(printf '%s\n' "${not_drawing}" | k apply --dry-run=server --validate=strict -f - 2>&1)"; then
+	echo "a bot turning rendering off was accepted: ${out}" >&2
+	exit 1
+fi
+if [[ "${out}" != *"render.enabled"* ]]; then
+	echo "a bot turning rendering off was refused for another reason: ${out}" >&2
+	exit 1
+fi
+echo "ok: a bot turning rendering off is refused: render.enabled is not a field"
 
 echo "== applying the fixtures"
 k apply -f "${FIXTURES}/minecraftbot.yaml"
@@ -384,6 +431,57 @@ await "minecraftbot/missing reports the pull failure" 180 \
 	contains minecraftbot missing .status.lastError ImagePull
 await "minecraftbot/missing is Failed" 60 equals minecraftbot missing .status.phase Failed
 k delete minecraftbot missing --wait=true
+
+echo "== a fabric bot's render settings reach its pod"
+# Read off the pod spec and never run it: the point is the wiring, and the kubelet can be pulling
+# 1.7GiB behind this without the answer changing. It is worth a round of its own because three of
+# these knobs used to go nowhere -- the operator sent BOT_RENDER, BOT_RENDER_WIDTH and
+# BOT_RENDER_HEIGHT, which no bot has ever read, and did not send the two a fabric bot does read.
+k apply -f - <<EOF
+apiVersion: mc-agents.junhyung.cloud/v1alpha1
+kind: MinecraftBot
+metadata:
+  name: drawing
+spec:
+  kind: fabric
+  minecraftVersion: "26.1.2"
+  render:
+    width: 1280
+    height: 720
+    distance: 4
+    frameRateLimit: 20
+  server:
+    host: nowhere.invalid
+EOF
+await "pod/drawing exists" 60 k get pod drawing
+drawing_env() {
+	field pod drawing ".spec.containers[?(@.name=='bot')].env[?(@.name=='$1')].value"
+}
+for pair in "BOT_SCREEN=1280x720x24" "BOT_RENDER_DISTANCE=4" "BOT_FRAME_RATE_LIMIT=20"; do
+	if [[ "$(drawing_env "${pair%%=*}")" != "${pair#*=}" ]]; then
+		echo "pod/drawing has ${pair%%=*}=$(drawing_env "${pair%%=*}"), want ${pair#*=}" >&2
+		exit 1
+	fi
+done
+echo "ok: the display, the render distance and the frame rate are on the pod"
+# The window, which is the resolution frames are captured at. The client defaults to 854x480 and
+# the entrypoint execs it with the container's arguments on the end.
+drawing_args="$(field pod drawing ".spec.containers[?(@.name=='bot')].args[*]")"
+if [[ "${drawing_args}" != "--width 1280 --height 720" ]]; then
+	echo "pod/drawing runs with args '${drawing_args}', want '--width 1280 --height 720'" >&2
+	exit 1
+fi
+echo "ok: the client is told the window size"
+# Nothing dead is left behind either, since a pod restarts when one of these changes and a name
+# nothing reads would be a restart for nothing.
+for dead in BOT_RENDER BOT_RENDER_WIDTH BOT_RENDER_HEIGHT; do
+	if [[ -n "$(drawing_env "${dead}")" ]]; then
+		echo "pod/drawing still carries ${dead}, which no bot reads" >&2
+		exit 1
+	fi
+done
+echo "ok: the names no bot reads are gone"
+k delete minecraftbot drawing --wait=true
 
 echo "== the pool owns its bots"
 await "the pool has three bots" 60 count_is scouts 3

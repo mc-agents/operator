@@ -116,27 +116,53 @@ type ImageOverride struct {
 	PullPolicy corev1.PullPolicy `json:"pullPolicy,omitempty"`
 }
 
-// RenderSpec is what a fabric bot draws with. It is handed to the pod as BOT_RENDER,
-// BOT_RENDER_WIDTH, BOT_RENDER_HEIGHT and BOT_FRAME_RATE_LIMIT.
+// RenderSpec is what a fabric bot draws with, and in a container that is a memory setting before
+// it is a picture setting: there is no graphics card, so Mesa's software rasteriser keeps every
+// texture and chunk mesh in system memory, and a bot left at a fresh client's defaults measured
+// 1.7GiB with 1.2GiB of it off-heap.
+//
+// Width and Height reach the client as --width and --height, and also size the virtual display it
+// draws into (BOT_SCREEN), because a window larger than the X root is a clipped window. Distance
+// becomes BOT_RENDER_DISTANCE and FrameRateLimit becomes BOT_FRAME_RATE_LIMIT.
+//
+// There is no field for whether the client renders at all, and there was: a fabric bot has no mode
+// in which it does not draw, so `enabled: false` set an environment variable nothing read and the
+// bot rendered anyway. A bot that should not draw is an azalea bot, which is `kind`.
+//
+// A profile supplies this block whole or not at all, and the API server fills in every field of a
+// block it can see. So writing one field is writing all four: a bot that sets `frameRateLimit` and
+// nothing else takes the defaults below for the other three and does not see its profile's render
+// at all, Distance included. Set the lot, or set none of it and leave the profile to it.
 type RenderSpec struct {
-	// Whether the client renders at all. Off, it cannot take a screenshot.
-	// +optional
-	// +kubebuilder:default=true
-	Enabled *bool `json:"enabled,omitempty"`
-
-	// Width of the framebuffer in pixels.
+	// Width of the framebuffer in pixels, and of the virtual display around it.
 	// +optional
 	// +kubebuilder:default=854
 	// +kubebuilder:validation:Minimum=320
+	// +kubebuilder:validation:Maximum=3840
 	Width int32 `json:"width,omitempty"`
 
-	// Height of the framebuffer in pixels.
+	// Height of the framebuffer in pixels, and of the virtual display around it.
 	// +optional
 	// +kubebuilder:default=480
 	// +kubebuilder:validation:Minimum=240
+	// +kubebuilder:validation:Maximum=2160
 	Height int32 `json:"height,omitempty"`
 
-	// Frames per second the client renders. One is enough for screenshots and keeps the CPU down.
+	// Chunks the client draws. A fresh client picks sixteen and a bot has no use for them: this is
+	// the largest lever on a pod's memory, and eight is already past what most servers send.
+	//
+	// Simulation distance follows it down only as far as five, which is the lowest the client takes.
+	// Below that it needs bot-fabric 0.78.0 or newer, which clamps; an older bot answered a value
+	// under five by keeping the client's own initial twelve, raising what it was asked to lower.
+	// +optional
+	// +kubebuilder:default=8
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=32
+	Distance int32 `json:"distance,omitempty"`
+
+	// Frames per second the client renders while no tool is waiting on it. One is enough for
+	// screenshots and keeps the CPU down; the bot raises it to 60 for the duration of a call that
+	// needs the picture to be current.
 	// +optional
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=1
@@ -250,7 +276,7 @@ type MinecraftBotSpec struct {
 	// reserved, since a later entry would silently win.
 	// +optional
 	// +kubebuilder:validation:MaxItems=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(e, e.name in ['MCP_SERVER_HOST','MCP_SERVER_PORT','BOT_LINK_TOKEN','BOT_NAME','BOT_KIND','MC_VERSION','HEALTH_PORT','BOT_WORK_DIR','MC_ASSETS_DIR','BOT_RENDER','BOT_RENDER_WIDTH','BOT_RENDER_HEIGHT','BOT_FRAME_RATE_LIMIT','POD_NAME','POD_NAMESPACE','NODE_NAME'])",message="env names the operator sets are reserved"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(e, e.name in ['MCP_SERVER_HOST','MCP_SERVER_PORT','BOT_LINK_TOKEN','BOT_NAME','BOT_KIND','MC_VERSION','HEALTH_PORT','BOT_WORK_DIR','MC_ASSETS_DIR','BOT_SCREEN','BOT_RENDER_DISTANCE','BOT_FRAME_RATE_LIMIT','POD_NAME','POD_NAMESPACE','NODE_NAME'])",message="env names the operator sets are reserved"
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// Goes onto the pod as written; empty takes the profile's.

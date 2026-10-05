@@ -6,12 +6,24 @@ operator is what installs the set: `values.yaml` pins the MCP server (`mcpServer
 `make verify` ran the join loop against exactly these. A row is added when a release moves any
 of them.
 
+Two rows say "not recorded". Four releases shipped between 0.22.0 and 0.25.0 without the table being
+written to -- 0.23.0, 0.23.1, 0.23.2 and 0.24.0 -- and of those only the first two moved a pin, so
+by the rule above only the first two get a row: 0.23.2 and 0.24.0 install what 0.23.1 does. What
+they pinned has been read back out of their tags, which are the record, so the versions are as
+reliable as any other row's. The order they shipped in is the part that only lived in whoever was
+doing it, and a guess here would read exactly like the rows that are not guesses. Note the asset
+fetcher sitting at 0.73.1 across both while bot-fabric moved: the comment beside it in `values.yaml`
+says the two move together, and for those releases they did not.
+
 The catalogue is the tool schema the bots were generated from; a bot built from another one has
 its mismatched tools disabled at handshake rather than the link refused. Minecraft is the one
 version the bot images are built for, carried in their tags as `-mc<version>`.
 
 | operator | mcp-server | catalogue | bot-fabric | bot-azalea | mc-assets | Minecraft | release order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.25.0 | 0.74.0 | 5.11.0 | 0.78.0 | 0.28.0 | 0.78.0 | 26.1.2 | bot-fabric first: render.distance under 5 needs its clamp |
+| 0.23.1 | 0.71.6 | 5.10.0 | 0.76.0 | 0.27.0 | 0.73.1 | 26.1.2 | not recorded; read back off the tag |
+| 0.23.0 | 0.71.4 | 5.10.0 | 0.76.0 | 0.27.0 | 0.73.1 | 26.1.2 | not recorded; read back off the tag |
 | 0.22.0 | 0.71.2 | 5.10.0 | 0.75.0 | 0.26.0 | 0.75.0 | 26.1.2 | mcp-server, then the operator; the bots are unchanged |
 | 0.21.0 | 0.71.1 | 5.10.0 | 0.75.0 | 0.26.0 | 0.75.0 | 26.1.2 | mcp-server, then the bots, then the operator |
 | 0.20.0 | 0.68.0 | 5.6.0 | 0.74.0 | 0.26.0 | 0.74.0 | 26.1.2 | mcp-server, then the bots, then the operator |
