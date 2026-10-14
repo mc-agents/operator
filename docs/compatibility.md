@@ -22,7 +22,7 @@ longer share one.
 
 | operator | mcp-server | catalogue | bot-fabric | bot-azalea | mc-assets | Minecraft | release order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0.26.0 | 0.75.0 | 5.11.0 | 0.79.0 | 0.28.0 | 0.79.0 | fabric 26.3, azalea 26.1.2 | the bots and mcp-server, then the operator: a fabric bot without a version needs 0.75.0 to be asked for 26.3 |
+| 0.26.1 | 0.75.0 | 5.11.0 | 0.79.0 | 0.28.0 | 0.79.0 | fabric 26.3, azalea 26.1.2 | the bots and mcp-server, then the operator: a fabric bot without a version needs 0.75.0 to be asked for 26.3 |
 | 0.25.0 | 0.74.0 | 5.11.0 | 0.78.0 | 0.28.0 | 0.78.0 | 26.1.2 | bot-fabric first: render.distance under 5 needs its clamp |
 | 0.23.1 | 0.71.6 | 5.10.0 | 0.76.0 | 0.27.0 | 0.73.1 | 26.1.2 | not recorded; read back off the tag |
 | 0.23.0 | 0.71.4 | 5.10.0 | 0.76.0 | 0.27.0 | 0.73.1 | 26.1.2 | not recorded; read back off the tag |
