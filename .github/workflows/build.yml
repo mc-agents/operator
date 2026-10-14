@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      from:
+        description: >-
+          The release to verify the upgrade from, when the one before this never published.
+          Empty takes it from the history, as a push does.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -50,8 +57,13 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (!github.event.forced && github.event.before) || '' }}
 
+      # The history names an unpublished release as readily as a published one, and the upgrade
+      # from it then fails, on purpose. Naming the release to start from instead is a person's
+      # call, so it is only taken from a manual run.
       - id: previous
-        run: echo "version=$(bash hack/previous-version.sh)" >> "$GITHUB_OUTPUT"
+        env:
+          FROM: ${{ inputs.from }}
+        run: echo "version=${FROM:-$(bash hack/previous-version.sh)}" >> "$GITHUB_OUTPUT"
 
       # Advisory of the day it runs, so it stays out of make check: a vulnerability published
       # overnight should fail the next push, not the one that was already green.
