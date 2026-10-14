@@ -4,7 +4,7 @@ metadata:
   name: looker
 spec:
   kind: fabric
-  minecraftVersion: "26.1.2"
+  minecraftVersion: "26.3"
   server:
     host: mc-agents-mcp-server-bots.game.svc
     port: 8765
@@ -26,7 +26,7 @@ spec:
   assets:
     # Unset claimName falls back to an emptyDir, which means every pod re-downloads 200-600MB
     # from the Mojang manifest. Fill a PVC once with a Job and set prefilled to mount it instead.
-    claimName: mc-assets-26-1-2
+    claimName: mc-assets-26-3
     prefilled: true
     readOnly: true
   # The operator's defaults, spelled out. Measured rather than budgeted: a bot in a flat world

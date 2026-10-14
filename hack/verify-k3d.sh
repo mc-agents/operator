@@ -334,7 +334,7 @@ metadata:
 spec:
   template:
     spec:
-      minecraftVersion: "26.1.2"
+      minecraftVersion: "26.3"
       botName: scout
       server:
         host: nowhere.invalid
@@ -346,7 +346,7 @@ kind: MinecraftBot
 metadata:
   name: overriding
 spec:
-  minecraftVersion: "26.1.2"
+  minecraftVersion: "26.3"
   server:
     host: nowhere.invalid
   env:
@@ -364,7 +364,7 @@ metadata:
   name: old-way
 spec:
   kind: fabric
-  minecraftVersion: "26.1.2"
+  minecraftVersion: "26.3"
   server:
     host: nowhere.invalid
   env:
@@ -385,7 +385,7 @@ metadata:
   name: not-drawing
 spec:
   kind: fabric
-  minecraftVersion: "26.1.2"
+  minecraftVersion: "26.3"
   render:
     enabled: false
   server:
@@ -444,7 +444,7 @@ metadata:
   name: drawing
 spec:
   kind: fabric
-  minecraftVersion: "26.1.2"
+  minecraftVersion: "26.3"
   render:
     width: 1280
     height: 720

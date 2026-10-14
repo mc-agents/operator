@@ -61,7 +61,7 @@ func (r *DefaultResolver) tag(spec *v1alpha1.MinecraftBotSpec, profile *v1alpha1
 	if spec.Image.Tag != "" {
 		return spec.Image.Tag, nil
 	}
-	// Both kinds are built against one protocol version, so both tags carry it.
+	// Each kind is built against its own protocol version, so its tag carries it.
 	var tag string
 	switch spec.Kind {
 	case v1alpha1.BotKindFabric:

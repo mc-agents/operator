@@ -208,7 +208,7 @@ metadata:
   name: scout
 spec:
   kind: fabric              # the default; azalea for a bot without a client
-  minecraftVersion: "26.1.2"
+  minecraftVersion: "26.3"
   server:
     host: mc-agents-mcp-server-bots.game.svc
     port: 8765
@@ -222,8 +222,8 @@ to outlive a session, since leave-server gives back only the bots join-server as
 ```console
 $ kubectl get minecraftbots
 NAME       KIND         MC       PHASE     LINK      POD        AGE
-scout      fabric       26.1.2   Running   Linked    scout      4m
-looker     fabric       26.1.2   Starting  Waiting   looker     20s
+scout      fabric       26.3     Running   Linked    scout      4m
+looker     fabric       26.3     Starting  Waiting   looker     20s
 ```
 
 `PHASE` is about the pod. `LINK` is about the bot: the pod's readiness probe goes green only once
@@ -279,7 +279,7 @@ A pool exists because "scale the bots" is the request, and one CR per bot makes 
 $ kubectl scale minecraftbotpool/scouts --replicas=8
 $ kubectl get minecraftbotpools
 NAME     DESIRED   CURRENT   LINKED   KIND         MC       AGE
-scouts   8         8         6        fabric       26.1.2   11m
+scouts   8         8         6        fabric       26.3     11m
 ```
 
 Bots are named by ordinal (`scouts-0`…`scouts-7`) rather than with a random suffix, because agents
@@ -312,7 +312,7 @@ redistribute. An initContainer pulls it from the Mojang version manifest into a 
 ```yaml
 spec:
   assets:
-    claimName: mc-assets-26-1-2   # unset falls back to an emptyDir
+    claimName: mc-assets-26-3     # unset falls back to an emptyDir
     prefilled: true               # a Job already filled it; skip the initContainer
     readOnly: true
 ```
@@ -480,6 +480,19 @@ A release also states what it was verified against: `mcpServer.tag`, `bots.fabri
 its row to [`docs/compatibility.md`](docs/compatibility.md).
 
 ## Upgrading
+
+### from 0.25
+
+0.26 moves fabric bots to Minecraft 26.3 and leaves azalea on 26.1.2, since azalea has no release
+past it. The bot images are named after the version a bot asks for, and bot-fabric 0.79.0 is built
+for 26.3 alone, so **a fabric `MinecraftBot` that still says `minecraftVersion: "26.1.2"` asks for
+`bot-fabric:0.79.0-mc26.1.2`, which does not exist**, and its pod sits in `ImagePullBackOff`. Set
+it to `"26.3"` in every fabric `MinecraftBot`, in a fabric pool's template, and in the claim names
+of asset PVCs filled for 26.1.2, which need filling again. An azalea bot needs no edit.
+
+The two kinds no longer join the same server: a client joins only a server of its own protocol, so
+fabric bots need a 26.3 server and azalea bots a 26.1.2 one. Bots `join-server` starts without a
+version are given the one their kind is built for by MCP server 0.75.0, which this release pins.
 
 ### from 0.24
 

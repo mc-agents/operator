@@ -4,7 +4,7 @@ metadata:
   name: scout
 spec:
   kind: fabric
-  minecraftVersion: "26.1.2"
+  minecraftVersion: "26.3"
   server:
     host: mc-agents-mcp-server-bots.game.svc
     port: 8765
