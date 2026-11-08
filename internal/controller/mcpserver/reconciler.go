@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"reflect"
+	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +38,8 @@ const (
 
 	reasonTokenCreated = "TokenCreated"
 	reasonApplyFailed  = "ApplyFailed"
+	reasonPulling      = "PullingImage"
+	reasonPullFailed   = "PullFailed"
 )
 
 type Reconciler struct {
@@ -71,7 +74,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
 		// The server pod is the ReplicaSet's, not ours, so Owns does not reach it; what the kubelet
-		// is stuck on has to come through its labels.
+		// is stuck on has to come through its labels. The image puller's progress comes the same way.
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(serverOf)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers}).
 		Complete(r)
@@ -79,7 +82,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 
 func serverOf(_ context.Context, obj client.Object) []reconcile.Request {
 	labels := obj.GetLabels()
-	if labels[v1alpha1.LabelName] != mcpserverspec.ComponentName || labels[v1alpha1.LabelMCPServer] == "" {
+	if name := labels[v1alpha1.LabelName]; name != mcpserverspec.ComponentName && name != mcpserverspec.PullerComponent || labels[v1alpha1.LabelMCPServer] == "" {
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: obj.GetNamespace(), Name: labels[v1alpha1.LabelMCPServer]}}}
@@ -115,8 +118,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	} else if err := r.removeRBAC(ctx, server); err != nil {
 		return ctrl.Result{}, r.fail(ctx, server, reasonApplyFailed, err)
 	}
+	var pods corev1.PodList
+	if err := r.client.List(ctx, &pods, client.InNamespace(server.Namespace), client.MatchingLabels(mcpserverspec.SelectorLabels(server))); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list server pods: %w", err)
+	}
 	deployment := mcpserverspec.Deployment(server, r.defaults)
-	objects = append(objects, deployment)
+	hold, err := r.pullFirst(ctx, server, deployment, pods.Items)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !hold {
+		objects = append(objects, deployment)
+	}
 
 	for _, obj := range objects {
 		if err := r.apply(ctx, obj); err != nil {
@@ -136,11 +149,86 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	case !apierrors.IsNotFound(err):
 		return ctrl.Result{}, fmt.Errorf("get deployment: %w", err)
 	}
-	var pods corev1.PodList
-	if err := r.client.List(ctx, &pods, client.InNamespace(server.Namespace), client.MatchingLabels(mcpserverspec.SelectorLabels(server))); err != nil {
-		return ctrl.Result{}, fmt.Errorf("list server pods: %w", err)
-	}
 	return ctrl.Result{}, r.writeStatus(ctx, server, observe(server, live, pods.Items))
+}
+
+// pullFirst reports whether to hold back a Deployment that would restart the server onto an image
+// its node does not have yet, starting the pull when it has not started. Nothing is held when no
+// server pod is up, since there is no gap left to shorten, nor once the pull has ended either way.
+func (r *Reconciler) pullFirst(ctx context.Context, server *v1alpha1.MCPServer, want *appsv1.Deployment, pods []corev1.Pod) (bool, error) {
+	var live appsv1.Deployment
+	err := r.client.Get(ctx, client.ObjectKeyFromObject(want), &live)
+	if client.IgnoreNotFound(err) != nil {
+		return false, fmt.Errorf("get deployment: %w", err)
+	}
+	image := mcpserverspec.Image(server, r.defaults)
+	if err != nil || serverImage(&live) == image || !slices.ContainsFunc(pods, running) {
+		return false, r.removePuller(ctx, server)
+	}
+
+	var puller corev1.Pod
+	switch err := r.client.Get(ctx, client.ObjectKey{Namespace: server.Namespace, Name: mcpserverspec.PullerName(server)}, &puller); {
+	case apierrors.IsNotFound(err):
+		if err := r.client.Create(ctx, mcpserverspec.Puller(server, r.defaults)); err != nil {
+			// A namespace that refuses the pod, under a quota say, is no reason to hold the rollout.
+			r.recorder.Eventf(server, corev1.EventTypeWarning, reasonPullFailed, "restarting without pulling %s first: %v", image, err)
+			return false, nil
+		}
+		r.recorder.Eventf(server, corev1.EventTypeNormal, reasonPulling, "pulling %s before the server restarts", image)
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("get image puller: %w", err)
+	}
+	// The pin moved again while the last one was pulling. The deletion brings this back to make the
+	// pod for the new image.
+	if puller.Spec.Containers[0].Image != image {
+		return true, client.IgnoreNotFound(r.client.Delete(ctx, &puller))
+	}
+	return !pullEnded(&puller), nil
+}
+
+func (r *Reconciler) removePuller(ctx context.Context, server *v1alpha1.MCPServer) error {
+	puller := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: server.Namespace, Name: mcpserverspec.PullerName(server)}}
+	if err := r.client.Get(ctx, client.ObjectKeyFromObject(puller), puller); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if err := r.client.Delete(ctx, puller); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("delete image puller: %w", err)
+	}
+	return nil
+}
+
+func serverImage(deployment *appsv1.Deployment) string {
+	for _, c := range deployment.Spec.Template.Spec.Containers {
+		if c.Name == mcpserverspec.ContainerName {
+			return c.Image
+		}
+	}
+	return ""
+}
+
+func running(pod corev1.Pod) bool {
+	return pod.DeletionTimestamp == nil && pod.Status.Phase == corev1.PodRunning
+}
+
+// pullEnded is a container past its image, or a pull that is not going to get there: one the
+// kubelet gave up on, one past its deadline, one no node will take.
+func pullEnded(pod *corev1.Pod) bool {
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return true
+	}
+	for _, s := range pod.Status.ContainerStatuses {
+		if s.State.Running != nil || s.State.Terminated != nil {
+			return true
+		}
+	}
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse {
+			return true
+		}
+	}
+	_, _, blocked := podstatus.Blocked(pod)
+	return blocked
 }
 
 // ensureSecret creates a generated Secret when it is missing and leaves it alone when it is not. An

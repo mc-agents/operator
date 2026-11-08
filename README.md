@@ -145,6 +145,12 @@ and `Failed` is a pod the kubelet will not start, a rollout that has given up, o
 apply the operator could not make. There is no `Terminating`: a deleted MCPServer takes everything
 it owns with it.
 
+The server restarts by Recreate, since a bot is linked to one pod, so every agent's session drops
+with it and has to reconnect. A new image is pulled before that: `<name>-mcp-server-pull` brings it
+onto the server's node and the Deployment changes only once it has, so the gap is the server's own
+start. A pull that fails, runs past five minutes or finds no node holds nothing, and the rollout's
+own pod then says what is wrong.
+
 Behind the policy is a second token, so a pod that gets past it still cannot pass itself off as a
 bot. The operator makes `<name>-mcp-server-link` once, as it does the auth token, hands it to the
 server as `BOT_LINK_TOKEN`, and tells the server its name as `MCP_BOTS_LINK_SECRET`: join-server
@@ -267,7 +273,8 @@ way.
 The `Ready` condition is `True` only under `Linked`; otherwise its reason is `WaitingForLink`,
 `PodPending`, `Terminating`, or the same cause `Degraded` gives. `Degraded` is `True` while the
 phase is `Failed`, and its reason names the cause: the kubelet's reason for a blocked container,
-`PodExited`, `InvalidSpec`, `PodNotOwned`. An MCPServer records `TokenCreated` and `ApplyFailed`;
+`PodExited`, `InvalidSpec`, `PodNotOwned`. An MCPServer records `TokenCreated`, `ApplyFailed`,
+`PullingImage` and `PullFailed`;
 a pool `ScaledUp`, `ScaledDown`, `TemplateUpdated` and `NameClash`, the last when an ordinal's
 name is held by a bot that is not the pool's, which `status.lastError` then carries.
 

@@ -468,6 +468,112 @@ func TestAServerWhoseTokenCannotBeMintedIsFailed(t *testing.T) {
 	}
 }
 
+// Recreate takes the old pod down before the new one exists, and a pull in that gap outlasted every
+// agent's reconnect: each had to be reconnected by hand after a version bump.
+func TestTheServerRestartsOntoANewImageOnlyOnceItsNodeHasIt(t *testing.T) {
+	h := newRunningServer(t)
+	h.bump(t, "0.56.0")
+	h.reconcile(t)
+
+	if got := h.serverImage(t); got != "junhyung.cloud/mc-agents/mcp-server:0.55.0" {
+		t.Fatalf("the server restarted onto %s before the image was pulled", got)
+	}
+	puller := h.puller(t)
+	if got := puller.Spec.Containers[0].Image; got != "junhyung.cloud/mc-agents/mcp-server:0.56.0" {
+		t.Fatalf("pulling %s, want the image the server is moving to", got)
+	}
+
+	puller.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "pull",
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
+	}}
+	if err := h.client.Status().Update(context.Background(), &puller); err != nil {
+		t.Fatal(err)
+	}
+	h.reconcile(t)
+	if got := h.serverImage(t); got != "junhyung.cloud/mc-agents/mcp-server:0.56.0" {
+		t.Fatalf("the server stayed on %s after the pull", got)
+	}
+
+	h.reconcile(t)
+	if err := h.get(t, "mc-agents-mcp-server-pull", &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the puller outlived the rollout it was for: %v", err)
+	}
+}
+
+// A pull that will not finish must not keep the old version running for good. The rollout's own
+// pod then hits the same thing and says so, as it did before there was a puller.
+func TestAPullThatCannotFinishDoesNotHoldTheRestart(t *testing.T) {
+	for name, status := range map[string]corev1.PodStatus{
+		"pull refused": {Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{{
+			Name:  "pull",
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ErrImagePull"}},
+		}}},
+		"past its deadline": {Phase: corev1.PodFailed, Reason: "DeadlineExceeded"},
+		"no node takes it": {Phase: corev1.PodPending, Conditions: []corev1.PodCondition{{
+			Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable,
+		}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newRunningServer(t)
+			h.bump(t, "0.56.0")
+			h.reconcile(t)
+
+			puller := h.puller(t)
+			puller.Status = status
+			if err := h.client.Status().Update(context.Background(), &puller); err != nil {
+				t.Fatal(err)
+			}
+			h.reconcile(t)
+			if got := h.serverImage(t); got != "junhyung.cloud/mc-agents/mcp-server:0.56.0" {
+				t.Fatalf("the server is held on %s", got)
+			}
+		})
+	}
+}
+
+func newRunningServer(t *testing.T) *harness {
+	t.Helper()
+	server := newServer()
+	h := newHarness(t, server)
+	h.reconcile(t)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "mc-agents-mcp-server-7d9f8b6c5-x2k9q", Namespace: namespace, Labels: mcpserverspec.Labels(server)},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	if err := h.client.Create(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func (h *harness) bump(t *testing.T, tag string) {
+	t.Helper()
+	server := h.server(t, "mc-agents")
+	server.Spec.Image.Tag = tag
+	if err := h.client.Update(context.Background(), &server); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (h *harness) serverImage(t *testing.T) string {
+	t.Helper()
+	var deployment appsv1.Deployment
+	if err := h.get(t, "mc-agents-mcp-server", &deployment); err != nil {
+		t.Fatal(err)
+	}
+	return deployment.Spec.Template.Spec.Containers[0].Image
+}
+
+func (h *harness) puller(t *testing.T) corev1.Pod {
+	t.Helper()
+	var pod corev1.Pod
+	if err := h.get(t, "mc-agents-mcp-server-pull", &pod); err != nil {
+		t.Fatalf("no image puller: %v", err)
+	}
+	return pod
+}
+
 func deployment(generation, observed int64, available int32) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Generation: generation},

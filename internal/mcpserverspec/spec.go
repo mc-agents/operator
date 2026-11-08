@@ -23,6 +23,7 @@ import (
 const (
 	ContainerName   = "mcp-server"
 	ComponentName   = "mcp-server"
+	PullerComponent = "mcp-server-pull"
 	BotLinkPort     = 8765
 	DefaultImage    = "junhyung.cloud/mc-agents/mcp-server"
 	portMCP         = "mcp"
@@ -40,6 +41,10 @@ type Defaults struct {
 
 func Name(server *v1alpha1.MCPServer) string {
 	return server.Name + "-mcp-server"
+}
+
+func PullerName(server *v1alpha1.MCPServer) string {
+	return Name(server) + "-pull"
 }
 
 func GeneratedSecretName(server *v1alpha1.MCPServer) string {
@@ -287,7 +292,12 @@ func container(server *v1alpha1.MCPServer, defaults Defaults) corev1.Container {
 			PeriodSeconds:    2,
 			FailureThreshold: 30,
 		},
-		LivenessProbe: &corev1.Probe{ProbeHandler: httpGet("/actuator/health/liveness")},
+		// The kubelet's one-second default killed a server whose node was busy running bots: the JVM
+		// answered, only late, and every agent on it lost its session to the restart.
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler:   httpGet("/actuator/health/liveness"),
+			TimeoutSeconds: 5,
+		},
 		// Ready means the bot link is accepting. A bot that dials a pod which is not ready gets
 		// nothing, and its MinecraftBot would sit at Waiting without saying why.
 		ReadinessProbe: &corev1.Probe{
@@ -300,6 +310,50 @@ func container(server *v1alpha1.MCPServer, defaults Defaults) corev1.Container {
 			AllowPrivilegeEscalation: ptr(false),
 			ReadOnlyRootFilesystem:   ptr(true),
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		},
+	}
+}
+
+// Puller brings the image a rollout is about to start onto the node the server runs on, so the
+// Recreate gap is the server's own start and not a pull as well. Agents reconnect for about half a
+// minute before giving up, and a pull alone took longer than that.
+//
+// Only getting past the pull matters. The command ends at once on the server's own image and fails
+// to start on any other, and either way the image is on the node. The deadline is what ends a pull
+// that hangs, so the rollout it holds goes ahead and its own pod says what is wrong.
+func Puller(server *v1alpha1.MCPServer, defaults Defaults) *corev1.Pod {
+	meta := objectMeta(server, PullerName(server))
+	meta.Labels[v1alpha1.LabelName] = PullerComponent
+	return &corev1.Pod{
+		TypeMeta:   typeMeta("v1", "Pod"),
+		ObjectMeta: meta,
+		Spec: corev1.PodSpec{
+			RestartPolicy:                corev1.RestartPolicyNever,
+			ActiveDeadlineSeconds:        ptr(int64(300)),
+			AutomountServiceAccountToken: ptr(false),
+			EnableServiceLinks:           ptr(false),
+			ImagePullSecrets:             server.Spec.ImagePullSecrets,
+			Tolerations:                  server.Spec.Tolerations,
+			Affinity: &corev1.Affinity{PodAffinity: &corev1.PodAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+					LabelSelector: &metav1.LabelSelector{MatchLabels: SelectorLabels(server)},
+					TopologyKey:   corev1.LabelHostname,
+				}},
+			}},
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot:   ptr(true),
+				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+			},
+			Containers: []corev1.Container{{
+				Name:            "pull",
+				Image:           Image(server, defaults),
+				ImagePullPolicy: server.Spec.Image.PullPolicy,
+				Command:         []string{"/cnb/lifecycle/launcher", "--", "java", "-version"},
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: ptr(false),
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				},
+			}},
 		},
 	}
 }
